@@ -1,0 +1,94 @@
+# mobile ai（移动AI）· 工程进度检查点
+
+> **本文件是断点续跑的唯一依据。** 每完成一步立即追加记录。
+> 若会话/模型中断，新对话里说「按 new dsh/PROGRESS.md 继续」即可精确接续。
+
+## 最终目标（已确认，2026-08-25）
+
+零成本隧道即服务（mini-ngrok），域名 newapi.email：一条命令 + 一个浏览器页面，
+把家中电脑任意本地服务（默认 DSH 127.0.0.1:3080）同步到手机。
+控制面 = CF Workers + D1（零成本）；数据面 = 用户机器 cloudflared 出站隧道。
+安全：机器码单终端绑定 + URL 轮换 + Cloudflare Access。付款先半自动（二维码+确认后自动发码）。
+
+## 目录约定（结构固定，只新增不改动已有布局）
+
+```
+new dsh/
+├── README.md / LICENSE / SECURITY.md      已有，不动
+├── docs/GUIDE.md                          已有，客服第一版内容源
+├── client/                                i.sh / i.ps1（新增）+ src/mobileai.mjs（已有）
+│   └── src/ui/index.html + styles.css     已有，不动
+├── control/                               P2/P3：Workers + D1 schema + nodemailer（新增）
+└── site/                                  P4：官网门户页面（新增）
+```
+
+## 阶段计划与状态
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| P1a | OMLX 健康预检 + PROGRESS.md | ✅ 2026-08-25 |
+| P1b | 读透 mobileai.mjs，确定缺失文件清单 | ✅ 2026-08-25 |
+| P1c | 补齐 guide.md / app.js（控制台引用缺失） | ✅ 2026-08-25 |
+| P1d | 写 i.sh / i.ps1 一键安装脚本 | ✅ 2026-08-25（node --check / bash -n 全过） |
+| P2a | control/ 控制面代码（activate/heartbeat/rotate + D1 schema） | ✅ 2026-08-25（core/cf/index/mock 全部 node --check 通过） |
+| P2b | 本地 mock 控制面 + 本机端到端跑通（mock） | ✅ 2026-08-25 API E2E 10/10 + 客户端集成（真实隧道待 CF 部署） |
+| P3 | 自动发信 worker（nodemailer 多邮箱） | ✅ 2026-08-25 D1 队列 + mailer.mjs，MOCK E2E 闭环 |
+| P4 | site/ 官网门户 + 自动客服 | ✅ 2026-08-25 src/site.js（落地/登录/我的页面），全旅程 E2E 通过 |
+| P5 | GitHub 发布 + 其他平台列表（需用户确认账号/仓库名） | ⬜ |
+
+## 检查点日志
+
+- **2026-08-25** 目标 9 项核对一致，用户确认开工。OMLX 预检通过（127.0.0.1:8000 正常）。
+- **2026-08-25** P1b：通读 mobileai.mjs（424 行，语法 OK）。已知契约：
+  - 控制面 API：`POST /api/activate {code, machineCode, serviceAddr}` → URL；
+    `POST /api/rotate {machineCode, url}` → 新 URL；`POST /api/heartbeat {machineCode, url}`
+  - apiBase = env `MOBILEAI_API` > state.apiBase > https://newapi.email
+  - 本地控制台 HTTP（端口从 5380 起找空位）：`GET /api/status`；UI 引用 SELF_DIR 下 `guide.md`、`app.js`（**缺失，待补**）
+  - cloudflared：下载到 ~/.mobileai/bin/（版本表在 CLOUDFLARED），token 模式运行，state.json 存 cfPid/url/machineCode
+  - 自启注册：launchd / systemd user / Windows schtasks（registerAutoStart）
+- **2026-08-25** P1c/P1d 完成并复核（换会话接管）：app.js(7.7KB)/i.sh/i.ps1/guide.md 均在盘，
+  `node --check` app.js、mobileai.mjs 与 `bash -n i.sh` 全部通过；cloudflared 钉版 2026.8.2 已验证存在。
+  **P1 ✅**。关键契约补充：cloudflared 以 `tunnel --token <tunnelToken> run`（命名隧道）运行，
+  故 `/api/activate` 响应必须含 `{tunnelToken, url}`；heartbeat 返回 `d.revoked=true` 时客户端自停隧道。
+- **2026-08-25** 接管说明：本地 OMLX 长回合易断，本会话继续执行。纪律不变——短回合、逐步落盘本文件；
+  P2b 本机 E2E 用 `MOBILEAI_NO_SPAWN=1`（不真跑 cloudflared），真实隧道验证待 CF 凭据部署后。
+- **2026-08-25** P2a 进行中：`control/` 新增 schema.sql（4 表+索引，sqlite3 :memory: 验证通过）、
+  wrangler.jsonc、package.json(type=module)、README.md（部署步骤+API/心跳策略）、src/core.js
+  （纯业务逻辑：activate 核销码+建隧道、heartbeat 宽限6h/停7d/错机即杀、rotate 换子域 token 不变、
+  admin 半自动收款发码）。bindings 表含 tunnel_token（同机重激活复用）。
+- **2026-08-25** P2a ✅ + API E2E 10/10：mock-server.mjs（内存 db+假 CF，:6420）全过——
+  发码/激活/心跳/轮换/错机即杀/付费重绑/同机幂等/码复用拒绝/admin 鉴权。
+  **客户端 bug 修复**（E2E 发现）：mobileai.mjs downloadCloudflared 用 `r.body.pipe`（Web stream 无 .pipe）
+  → 改 `Readable.fromWeb(r.body).pipe(out)`（1MB 单测通过；本机 GitHub asset 可达但 ~62KB/s，环境因素）。
+- **2026-08-25** P2b ✅（无 CF 凭据可达范围）：真实客户端 daemon（fake HOME + launchctl stub，:5380）
+  → mock 控制面：/api/start {ok:true,url} → status activated:true，state.json 存 token+url；
+  UI 静态资源 /、/app.js、/guide.md 均 200。真实 cloudflared 隧道 + CF DNS 待 P2 部署（wrangler token）。
+  mock 复跑：`cd control && node mock-server.mjs`（admin token: dev-admin-token）。
+- **2026-08-25** P3 ✅：schema 增 emails/magic_links/sessions（sqlite3 验证）；core.js 加
+  createMagicLink/consumeMagicLink/enqueueEmail/markEmail/apply/createSession/sessionUser/mePayload + 纯文本邮件模板；
+  index.js+mock-server 加 /admin/email-queue、/admin/email-result（Bearer ADMIN_TOKEN）。
+  `control/mailer.mjs`：nodemailer 多邮箱轮转（gmail/qq/163/outlook SMTP 推断）、POLL_MS 轮询、MAIL_MOCK=1 调试模式。
+  **E2E ✅**：order-paid → 认证码邮件入队（正文含 MAI-DWKVP3）→ mailer 1s 内发出 → sent，队列清空。
+  （修复：mailer.mjs 一处模板字符串反引号未闭合——node --check 抓到。）真实 SMTP 发送待家中机器配 MAIL_ACCOUNTS。
+- **2026-08-25** P4 ✅：src/site.js（落地页/magic link/我的页面，黑白 Apple 风，Worker+mock 共用）；
+  index.js + mock-server 挂路由：GET /（申请）、POST /site/apply、GET /login?token=（一次性→302+HttpOnly cookie）、
+  GET /me、POST /site/logout；静态分发 i.sh/mobileai.mjs/app.js/guide.md（wrangler assets: control/static/）。
+  **全旅程 E2E ✅**：apply → magic link（从邮件正文解析）→ 登录 302 → /me 待付款确认
+  → order-paid MAI-DFXWES → /me 已激活+码展示；无会话 302→/。
+- **2026-08-25** P5 进行中：gh 已登录 ricky8848 → 推 GitHub（私有仓库 mobile-ai，确认后可一键转公开）。
+
+## 模型断连防护与恢复（重要）
+
+**预防**：短回合纪律——每个助手回只做一个可验证的小步骤，完成后立即更新本文件。
+
+**OMLX 挂死自检**（对话框长时间无响应时，在另一个会话或终端执行）：
+```sh
+curl -sS --max-time 8 http://127.0.0.1:8000/v1/models -H 'Authorization: Bearer 1234' | head -c 80
+```
+无输出/超时 = OMLX 挂死 → 重启 oMLX.app（或杀掉监听 8000 的进程后重新打开 App），
+再回本会话说「继续」。
+
+**断点恢复步骤**：
+1. 确认 OMLX 自检通过；
+2. 本会话直接说「继续」，或新对话里粘贴：`按 /Users/ricky/deepseek-untitled folder/new dsh/PROGRESS.md 继续执行`；
+3. 从「阶段计划」表中第一个 ⬜/⏳ 项开始，不重复已完成步骤。

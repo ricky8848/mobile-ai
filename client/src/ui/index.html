@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mobile ai · 本地控制台</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="wordmark">mobile ai <span>· 本地控制台</span></div>
+    <div class="dot" id="status-dot"></div>
+  </header>
+
+  <!-- 状态卡 -->
+  <section class="card">
+    <div class="status-row">
+      <span id="status-text" style="font-size:17px;font-weight:600">未连接</span>
+    </div>
+    <div class="url-box" id="tunnel-url">https://———.newapi.email</div>
+    <p style="margin-top:14px"><button class="btn small ghost" id="copy-url">复制 URL</button>
+    <button class="btn small ghost" id="rotate-url">轮换 URL（泄露时用）</button></p>
+  </section>
+
+  <!-- Tabs -->
+  <nav class="tabs">
+    <div class="tab active" data-tab="setup">设置</div>
+    <div class="tab" data-tab="status">状态</div>
+    <div class="tab" data-tab="guide">使用指引</div>
+  </nav>
+
+  <!-- 设置 -->
+  <section id="tab-setup">
+    <h1>连接你的电脑</h1>
+    <p class="sub">填写两项，启动隧道。手机打开你的专属 URL 即可使用。</p>
+    <div class="card">
+      <div class="field">
+        <label for="svc-addr">本机服务地址</label>
+        <input type="text" id="svc-addr" value="127.0.0.1:3080">
+      </div>
+      <div class="field">
+        <label for="auth-code">认证码</label>
+        <input type="text" id="auth-code" placeholder="购买后在邮件 / 门户获取">
+      </div>
+      <button class="btn" id="start-btn">启动隧道</button>
+    </div>
+  </section>
+
+  <!-- 状态 -->
+  <section id="tab-status" hidden>
+    <h1>设备与隧道</h1>
+    <p class="sub">机器码是客服凭证，请妥善保管。</p>
+    <div class="card">
+      <div class="kv"><span class="k">机器码</span><span class="v" id="machine-code">———</span></div>
+      <div class="kv"><span class="k">隧道状态</span><span class="v" id="tunnel-state">———</span></div>
+      <div class="kv"><span class="k">最近心跳</span><span class="v" id="last-heartbeat">———</span></div>
+      <div class="kv"><span class="k">本机服务</span><span class="v" id="svc-addr-ro">127.0.0.1:3080</span></div>
+    </div>
+  </section>
+
+  <!-- 指引（P1 由 server.mjs 注入 docs/GUIDE.md） -->
+  <section id="tab-guide" class="guide" hidden>
+    <h2>指引加载中…</h2>
+  </section>
+
+  <footer>mobile ai v0.1 · MIT © ricky8848</footer>
+</div>
+<script src="/app.js" defer></script>
+</body>
+</html>

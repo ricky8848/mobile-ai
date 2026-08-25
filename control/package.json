@@ -1,0 +1,8 @@
+{
+  "name": "mobileai-control",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mock": "node mock-server.mjs"
+  }
+}

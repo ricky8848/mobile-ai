@@ -1,0 +1,24 @@
+{
+  // mobile ai（移动AI）· 控制面 Worker。部署步骤见 control/README.md
+  "name": "mobileai-control",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mobileai-db",
+      // 首次部署前执行：npx wrangler d1 create mobileai-db，把返回的 database_id 填到这里
+      "database_id": "REPLACE_AFTER_D1_CREATE"
+    }
+  ],
+  "vars": {
+    // newapi.email 根域（子域 = <subdomain>.newapi.email）
+    "DOMAIN": "newapi.email"
+  },
+  // 一键安装脚本 + 客户端源码（curl -fsSL https://newapi.email/i.sh | bash）
+  "assets": { "directory": "./static" }
+  // secrets（不进仓库）：npx wrangler secret put <KEY>
+  //   CF_API_TOKEN    — Cloudflare account API token（隧道/DNS 管理权限）
+  //   CF_ACCOUNT_ID   — Cloudflare account id
+  //   ADMIN_TOKEN     — /admin/* 管理端鉴权（Bearer）
