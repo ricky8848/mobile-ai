@@ -14,7 +14,12 @@
   ],
   "vars": {
     // newapi.email 根域（子域 = <subdomain>.newapi.email）
-    "DOMAIN": "newapi.email"
+    "DOMAIN": "newapi.email",
+    // P6 收费配置（可选；缺省 ¥39 占位、二维码显示"未配置"）——上线前替换为真实值：
+    // "PAYMENT_AMOUNT": "¥39",
+    // "PAYMENT_QR_ALIPAY": "https://.../alipay-qr.png",
+    // "PAYMENT_QR_WECHAT": "https://.../wechat-qr.png",
+    // "PAYMENT_AMOUNT_CENTS": 3900   // orders.amount_cents 记录值
   },
   // 一键安装脚本 + 客户端源码（curl -fsSL https://newapi.email/i.sh | bash）
   "assets": { "directory": "./static" }

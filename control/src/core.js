@@ -125,10 +125,10 @@ export async function issueCode(db, { email, orderId }, ts) {
   return { code: c };
 }
 
-export async function markOrderPaid(db, { email, method, ref }, ts) {
+export async function markOrderPaid(db, { email, method, ref, amountCents }, ts) {
   const u = await ensureUser(db, email, ts);
   const oid = 'ord_' + randFrom(SUB_ALPHABET, 12);
-  await db.createOrder({ id: oid, user_id: u.id, amount_cents: 0, method: method || null,
+  await db.createOrder({ id: oid, user_id: u.id, amount_cents: Number(amountCents) || 0, method: method || null,
     ref: ref || null, status: 'paid', created_at: ts, updated_at: ts });
   await db.updateUser(u.id, { status: 'active' }, ts); // pending → active
   const r = await issueCode(db, { email, orderId: oid }, ts);   // 收款确认 → 自动发码
@@ -209,4 +209,50 @@ export async function mePayload(db, user) {
   const codes = await db.latestCodes(user.id);
   const bindings = await db.bindingsForUser(user.id, ['active', 'grace']);
   return { email: user.email, status: user.status, code: codes[0] || null, binding: bindings[0] || null };
+}
+
+/* ---------------- P6：收费信息（v0.3 半自动：二维码 + 确认后自动发码） ---------------- */
+// env 覆盖（Worker vars / mock process.env），缺省为占位值——真实二维码 URL 与金额由运营配置。
+export const PAYMENT_DEFAULT = {
+  amountLabel: '¥39',
+  note: '一次性付费 · 专属 URL + 开机自启自动重连，无订阅',
+  methods: [ { name: '支付宝', envKey: 'PAYMENT_QR_ALIPAY' }, { name: '微信支付', envKey: 'PAYMENT_QR_WECHAT' } ],
+};
+
+export function paymentInfoFromEnv(env = {}) {
+  const p = JSON.parse(JSON.stringify(PAYMENT_DEFAULT)); // 深拷贝，避免污染缺省
+  if (env.PAYMENT_AMOUNT) p.amountLabel = String(env.PAYMENT_AMOUNT);
+  if (env.PAYMENT_NOTE) p.note = String(env.PAYMENT_NOTE);
+  for (const m of p.methods) if (env[m.envKey]) m.qrUrl = String(env[m.envKey]);
+  return p;
+}
+
+/* ---------------- P6：管理端会话（cookie mai_admin，与门户 mai_session 分离） ---------------- */
+export async function createAdminSession(db, ts) {
+  let t; do { t = genToken(); } while (await db.adminSession(t));
+  await db.createAdminSession({ token: t, created_at: ts, expires_at: ts + 7 * 24 * 3600e3 });
+  return t;
+}
+
+export async function adminSessionOk(db, token) {
+  const s = await db.adminSession(String(token || ''));
+  return !!s && Date.now() <= s.expires_at;
+}
+
+export async function deleteAdminSession(db, token) {
+  await db.deleteAdminSession(String(token || ''));
+}
+
+/* ---------------- P6：管理端操作（吊销绑定） ---------------- */
+export async function revokeBinding(db, id, ts) {
+  const b = await db.binding(String(id || ''));
+  if (!b) return err('绑定不存在');
+  await db.updateBinding(id, { status: 'revoked' }, ts);
+  return { ok: true, id };
+}
+
+// 管理端绑定列表（带用户邮箱，JOIN users；machine_code 截断展示）
+export async function adminBindings(db, { limit = 200, status } = {}) {
+  const rows = await db.bindingsWithUser(limit, status);
+  return (rows || []).map((b) => ({ ...b, machine_code: b.machine_code ? String(b.machine_code).slice(0, 12) + '…' : '' }));
 }

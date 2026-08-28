@@ -1,7 +1,8 @@
 // mobile ai（移动AI）· 控制面 Worker 入口：路由 + D1 适配器。
 // 业务逻辑全在 core.js；CF 调用走 cf.js（makeCf(env)）。
-import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload } from './core.js';
-import { landingPage, loginErrorPage, mePage } from './site.js';
+import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
+  paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings } from './core.js';
+import { landingPage, loginErrorPage, mePage, adminLoginPage, adminDashboard } from './site.js';
 import { makeCf } from './cf.js';
 
 const json = (body, status = 200) =>
@@ -61,6 +62,17 @@ function dbAdapter(db) {
     listBindings: async (status) => status
       ? (await db.prepare('SELECT * FROM bindings WHERE status=? ORDER BY created_at DESC LIMIT 200').bind(status).all()).results
       : (await db.prepare('SELECT * FROM bindings ORDER BY created_at DESC LIMIT 200').all()).results,
+    binding: (id) => db.prepare('SELECT * FROM bindings WHERE id=?').bind(id).first(),
+    adminSession: (t) => db.prepare('SELECT * FROM admin_sessions WHERE token=?').bind(t).first(),
+    createAdminSession: (r) => db.prepare('INSERT INTO admin_sessions (token,created_at,expires_at) VALUES (?,?,?)')
+      .bind(r.token, r.created_at, r.expires_at).run(),
+    deleteAdminSession: (t) => db.prepare('DELETE FROM admin_sessions WHERE token=?').bind(t).run(),
+    bindingsWithUser: async (limit, status) => {
+      const q = status
+        ? db.prepare('SELECT b.*, u.email FROM bindings b JOIN users u ON u.id=b.user_id WHERE b.status=? ORDER BY b.created_at DESC LIMIT ?').bind(status, limit)
+        : db.prepare('SELECT b.*, u.email FROM bindings b JOIN users u ON u.id=b.user_id ORDER BY b.created_at DESC LIMIT ?').bind(limit);
+      return (await q.all()).results;
+    },
   };
 }
 const ts0 = (r) => r.created_at || Date.now();
@@ -92,22 +104,43 @@ export default {
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
       if (!u) return new Response(null, { status: 302, headers: { location: '/' } });
-      return html(mePage(await mePayload(db, u), portalBase));
+      return html(mePage(await mePayload(db, u), portalBase, env.DOMAIN, paymentInfoFromEnv(env)));
     }
     if (req.method === 'POST' && url.pathname === '/site/logout') {
       return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': 'mai_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
     }
 
-    // ---- 管理端（Bearer ADMIN_TOKEN；v0.3 半自动收款/发码）----
+    // ---- 管理端（P6：/admin 控制台；Bearer ADMIN_TOKEN 或 mai_admin cookie）----
     const auth = req.headers.get('authorization') || '';
+    const adminTok = (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_admin='))?.slice(10);
+    const adminOk = !!(env.ADMIN_TOKEN && (auth === 'Bearer ' + env.ADMIN_TOKEN ||
+      (adminTok && await adminSessionOk(db, adminTok))));
+
+    if (req.method === 'GET' && url.pathname === '/admin') {
+      return html(adminOk ? adminDashboard(portalBase) : adminLoginPage());
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/login') {
+      if (!env.ADMIN_TOKEN || String(body.token || '') !== env.ADMIN_TOKEN) return json({ error: '令牌不正确' }, 401);
+      const tok = await createAdminSession(db, ts);
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json; charset=utf-8',
+        'set-cookie': `mai_admin=${tok}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` } });
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/logout') {
+      if (adminTok) await deleteAdminSession(db, adminTok);
+      return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': 'mai_admin=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
+    }
+
     if (url.pathname.startsWith('/admin/')) {
-      if (!env.ADMIN_TOKEN || auth !== 'Bearer ' + env.ADMIN_TOKEN) return json({ error: 'unauthorized' }, 401);
+      if (!adminOk) return json({ error: 'unauthorized' }, 401);
       const db2 = db; // 便于阅读
       if (req.method === 'POST' && url.pathname === '/admin/user') { const u = await ensureUser(db2, body.email, ts); return json({ ok: true, email: u.email, status: u.status }); }
-      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(markOrderPaid(db2, body, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(markOrderPaid(db2, { ...body, amountCents: Number(env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
       if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(issueCode(db2, { email: body.email }, ts));
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(await db2.listUsers());
-      if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(await db2.listBindings(url.searchParams.get('status')));
+      if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(await adminBindings(db2, { status: url.searchParams.get('status') }));
+      if (req.method === 'GET' && url.pathname === '/admin/emails') return json({ queued: await db2.listEmails('queued', 10),
+        recent: await db2.listEmails(null, Number(url.searchParams.get('limit')) || 20) });
+      if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(revokeBinding(db2, body.id, ts));
       if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json({ emails: await db2.listEmails('queued', 10) });
       if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db2, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json({ ok: true }); }
       return json({ error: 'not found' }, 404);

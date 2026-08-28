@@ -35,6 +35,7 @@ new dsh/
 | P3 | 自动发信 worker（nodemailer 多邮箱） | ✅ 2026-08-25 D1 队列 + mailer.mjs，MOCK E2E 闭环 |
 | P4 | site/ 官网门户 + 自动客服 | ✅ 2026-08-25 src/site.js（落地/登录/我的页面），全旅程 E2E 通过 |
 | P5 | GitHub 发布 + 其他平台列表（需用户确认账号/仓库名） | ✅ 2026-08-25 已推私有仓 ricky8848/mobile-ai（可一键转公开） |
+| P6 | 收费功能完善（二维码+确认后自动发码，按计划半自动） + /admin 管理控制台 | ✅ 2026-08-28 mock E2E 全过（生产 CF 部署待凭据） |
 
 ## 检查点日志
 
@@ -86,3 +87,19 @@ new dsh/
   用户访问：magic link 登录（MOCK 模式链接在 /tmp/mai-mailer.log）→ 打开 http://127.0.0.1:6420/me。
   部署准备：control/ 已装 wrangler@4.127.0（npm EPERM→`--cache /tmp/mai-npm-cache` 绕过；wrangler 写
   ~/.wrangler 的权限问题在部署时处理）。剩余手动项不变：CF 凭据 + MAIL_ACCOUNTS。
+- **2026-08-28** P6 ✅ 收费功能完善 + /admin 管理控制台（按既定计划「付款先半自动：二维码+确认后自动发码」）：
+  - core.js：paymentInfoFromEnv（env PAYMENT_AMOUNT/PAYMENT_NOTE/PAYMENT_QR_ALIPAY/PAYMENT_QR_WECHAT 覆盖，
+    缺省 ¥39 占位）；admin 会话（cookie mai_admin，7d：createAdminSession/adminSessionOk/deleteAdminSession）；
+    revokeBinding（吊销即隧道失效）；adminBindings（JOIN users 带邮箱 + machine_code 截断展示）；
+    markOrderPaid 记录 amount_cents（env PAYMENT_AMOUNT_CENTS，缺省 3900）。
+  - site.js：/me 待付款状态 → 付款卡片（金额 + 支付宝/微信二维码；未配置显示虚线占位）+「已付款无需操作」提示；
+    新增 /admin 控制台（token 登录页 + 三表：用户与发码[确认收款/试用码]、终端绑定[吊销]、邮件队列）。
+  - index.js + mock-server.mjs：GET /admin、POST /admin/login|logout（mai_admin HttpOnly cookie）；
+    admin JSON API 双鉴权（Bearer ADMIN_TOKEN **或** mai_admin cookie，mailer/脚本兼容不变）；
+    新增 GET /admin/emails（queued+recent）、POST /admin/revoke。schema.sql + admin_sessions 表（sqlite3 :memory: 验证）。
+  - E2E ✅：登录页/错 token 401/dashboard 三表渲染/cookie（无 Bearer）确认收款→发码+mailer 邮件送达→
+    activate 后绑定列表带邮箱显示→吊销 ok→heartbeat 返回 revoked:true；/me 待付款用户见付款卡片（¥39+占位码）；
+    Bearer 路径（mailer /admin/email-queue）不受影响。修复：/admin/bindings 误用 listBindings（无 email JOIN）、
+    mock createBinding 缺 created_at/updated_at、mock portalBase TDZ。
+  - **用户待给**：真实收款二维码 URL + 金额（wrangler vars / env，见 control/wrangler.jsonc 注释）；
+    生产 ADMIN_TOKEN（mock 用 dev-admin-token）。本地管理台：http://127.0.0.1:6420/admin

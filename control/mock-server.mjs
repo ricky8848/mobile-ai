@@ -4,8 +4,9 @@
 //   MOCK_PORT=xxxx node mock-server.mjs
 import http from 'node:http';
 import fs from 'node:fs';
-import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload } from './src/core.js';
-import { landingPage, loginErrorPage, mePage } from './src/site.js';
+import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
+  paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings } from './src/core.js';
+import { landingPage, loginErrorPage, mePage, adminLoginPage, adminDashboard } from './src/site.js';
 
 const PORT = Number(process.env.MOCK_PORT || 6420);
 export const DOMAIN = 'newapi.email';
@@ -15,6 +16,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'dev-admin-token';
 const users = new Map(), codes = new Map(), bindings = new Map(); // key: 主键
 const orders = [];
 const magicLinks = new Map(), sessionsMap = new Map(); const emailsArr = []; // P3/P4 内存态
+const adminSessionsMap = new Map(); // P6 管理端会话（cookie mai_admin）
 
 export const db = {
   code: (c) => codes.get(c),
@@ -24,7 +26,7 @@ export const db = {
   bindingBySubdomain: async (sub) => { for (const b of bindings.values()) if (b.subdomain === sub) return b; return null; },
   async bindingsForUser(uid, statuses) { const r = []; for (const b of bindings.values()) if (b.user_id === uid && statuses.includes(b.status)) r.push(b); return r.sort((a, b) => b.created_at - a.created_at); },
   redeemCode: async (c, ts) => { const k = codes.get(c); if (k && k.status === 'issued') { k.status = 'redeemed'; k.updated_at = ts; } },
-  createBinding: async (r) => { bindings.set(r.id, { ...r }); },
+  createBinding: async (r) => { bindings.set(r.id, { created_at: r.created_at || Date.now(), updated_at: r.updated_at || Date.now(), ...r }); },
   updateBinding: async (id, fields, ts) => { const b = bindings.get(id); if (!b) return; Object.assign(b, fields, { updated_at: ts }); },
   createUser: async (r) => { users.set(r.id, { ...r }); },
   updateUser: async (id, fields, ts) => { const u = users.get(id); if (!u) return; Object.assign(u, fields, { updated_at: ts }); },
@@ -41,6 +43,13 @@ export const db = {
   session: (t) => sessionsMap.get(t),
   createSession: async (r) => { sessionsMap.set(r.token, { ...r }); },
   listBindings: async (status) => [...bindings.values()].filter((b) => !status || b.status === status),
+  binding: (id) => bindings.get(String(id)),
+  adminSession: (t) => adminSessionsMap.get(String(t || '')),
+  createAdminSession: async (r) => { adminSessionsMap.set(r.token, { ...r }); },
+  deleteAdminSession: async (t) => { adminSessionsMap.delete(String(t || '')); },
+  bindingsWithUser: async (limit, status) => [...bindings.values()].filter((b) => !status || b.status === status)
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0)).slice(0, limit || 200)
+    .map((b) => ({ ...b, email: users.get(b.user_id)?.email || null })),
 };
 
 /* ---------------- 假 CF（token/子域可验证流转，不碰网络） ---------------- */
@@ -61,24 +70,47 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   let body; try { body = req.method === 'POST' ? JSON.parse((await drain(req)) || '{}') : {}; } catch { body = {}; }
   const ts = Date.now();
+  const portalBase = process.env.PORTAL_BASE || 'http://127.0.0.1:' + PORT;
   try {
     if (req.method === 'POST' && url.pathname === '/api/activate') return out(res, await activate(db, cf, body, DOMAIN, ts));
     if (req.method === 'POST' && url.pathname === '/api/heartbeat') return out(res, await heartbeat(db, body, DOMAIN, ts));
     if (req.method === 'POST' && url.pathname === '/api/rotate') return out(res, await rotate(db, cf, body, DOMAIN, ts));
+    // ---- 管理端（P6：/admin 控制台；Bearer ADMIN_TOKEN 或 mai_admin cookie）----
+    const auth = req.headers['authorization'] || ''; // Node http：headers 是普通对象（Workers 侧用 .get）
+    const adminTok = (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_admin='))?.slice(10);
+    const adminOk = !!(ADMIN_TOKEN && (auth === 'Bearer ' + ADMIN_TOKEN ||
+      (adminTok && await adminSessionOk(db, adminTok))));
+
+    if (req.method === 'GET' && url.pathname === '/admin') {
+      return html(res, adminOk ? adminDashboard(portalBase) : adminLoginPage());
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/login') {
+      if (!ADMIN_TOKEN || String(body.token || '') !== ADMIN_TOKEN) return json(res, { error: '令牌不正确' }, 401);
+      const tok = await createAdminSession(db, ts);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8',
+        'set-cookie': `mai_admin=${tok}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    if (req.method === 'POST' && url.pathname === '/admin/logout') {
+      if (adminTok) await deleteAdminSession(db, adminTok);
+      res.writeHead(302, { location: '/', 'set-cookie': 'mai_admin=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' }); return res.end();
+    }
+
     if (url.pathname.startsWith('/admin/')) {
-      const auth = req.headers['authorization'] || ''; // Node http：headers 是普通对象（Workers 侧用 .get）
-      if (auth !== 'Bearer ' + ADMIN_TOKEN) return json(res, { error: 'unauthorized' }, 401);
+      if (!adminOk) return json(res, { error: 'unauthorized' }, 401);
       if (req.method === 'POST' && url.pathname === '/admin/user') { const u = await ensureUser(db, body.email, ts); return json(res, { ok: true, email: u.email, status: u.status }); }
-      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(res, await markOrderPaid(db, body, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(res, await markOrderPaid(db, { ...body, amountCents: Number(process.env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
       if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(res, await issueCode(db, { email: body.email }, ts));
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(res, await db.listUsers());
-      if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(res, await db.listBindings(url.searchParams.get('status')));
+      if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(res, await adminBindings(db, { status: url.searchParams.get('status') }));
+      if (req.method === 'GET' && url.pathname === '/admin/emails') return json(res, { queued: await db.listEmails('queued', 10),
+        recent: await db.listEmails(null, Number(url.searchParams.get('limit')) || 20) });
+      if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(res, await revokeBinding(db, body.id, ts));
       if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json(res, { emails: await db.listEmails('queued', 10) });
       if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json(res, { ok: true }); }
       return json(res, { error: 'not found' }, 404);
     }
     // ---- 门户（P4，与 Worker 一致）----
-    const portalBase = process.env.PORTAL_BASE || 'http://127.0.0.1:' + PORT;
     if (req.method === 'GET' && url.pathname === '/') return html(res, landingPage());
     if (req.method === 'POST' && url.pathname === '/site/apply') return out(res, await apply(db, body, portalBase, ts));
     if (req.method === 'GET' && url.pathname === '/login') {
@@ -90,7 +122,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
       if (!u) { res.writeHead(302, { location: '/' }); return res.end(); }
-      return html(res, mePage(await mePayload(db, u), portalBase));
+      return html(res, mePage(await mePayload(db, u), portalBase, DOMAIN, paymentInfoFromEnv(process.env)));
     }
     if (req.method === 'POST' && url.pathname === '/site/logout') { res.writeHead(302, { location: '/', 'set-cookie': 'mai_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' }); return res.end(); }
     // 安装脚本静态分发（与 wrangler assets static/ 同集合）

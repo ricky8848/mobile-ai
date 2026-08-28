@@ -76,3 +76,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_emails_status  ON emails(status, created_at);
+
+-- ---- P6：管理端会话（cookie mai_admin，与门户 mai_session 分离）----
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token      TEXT PRIMARY KEY,           -- 32 hex；cookie mai_admin（HttpOnly）
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL            -- unix ms（默认 +7d）
+);
