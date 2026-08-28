@@ -4,5 +4,8 @@
   "type": "module",
   "scripts": {
     "mock": "node mock-server.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.127.0"
   }
 }

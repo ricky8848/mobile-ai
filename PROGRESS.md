@@ -34,7 +34,7 @@ new dsh/
 | P2b | 本地 mock 控制面 + 本机端到端跑通（mock） | ✅ 2026-08-25 API E2E 10/10 + 客户端集成（真实隧道待 CF 部署） |
 | P3 | 自动发信 worker（nodemailer 多邮箱） | ✅ 2026-08-25 D1 队列 + mailer.mjs，MOCK E2E 闭环 |
 | P4 | site/ 官网门户 + 自动客服 | ✅ 2026-08-25 src/site.js（落地/登录/我的页面），全旅程 E2E 通过 |
-| P5 | GitHub 发布 + 其他平台列表（需用户确认账号/仓库名） | ⬜ |
+| P5 | GitHub 发布 + 其他平台列表（需用户确认账号/仓库名） | ✅ 2026-08-25 已推私有仓 ricky8848/mobile-ai（可一键转公开） |
 
 ## 检查点日志
 
@@ -76,19 +76,13 @@ new dsh/
   **全旅程 E2E ✅**：apply → magic link（从邮件正文解析）→ 登录 302 → /me 待付款确认
   → order-paid MAI-DFXWES → /me 已激活+码展示；无会话 302→/。
 - **2026-08-25** P5 进行中：gh 已登录 ricky8848 → 推 GitHub（私有仓库 mobile-ai，确认后可一键转公开）。
-
-## 模型断连防护与恢复（重要）
-
-**预防**：短回合纪律——每个助手回只做一个可验证的小步骤，完成后立即更新本文件。
-
-**OMLX 挂死自检**（对话框长时间无响应时，在另一个会话或终端执行）：
-```sh
-curl -sS --max-time 8 http://127.0.0.1:8000/v1/models -H 'Authorization: Bearer 1234' | head -c 80
-```
-无输出/超时 = OMLX 挂死 → 重启 oMLX.app（或杀掉监听 8000 的进程后重新打开 App），
-再回本会话说「继续」。
-
-**断点恢复步骤**：
-1. 确认 OMLX 自检通过；
-2. 本会话直接说「继续」，或新对话里粘贴：`按 /Users/ricky/deepseek-untitled folder/new dsh/PROGRESS.md 继续执行`；
-3. 从「阶段计划」表中第一个 ⬜/⏳ 项开始，不重复已完成步骤。
+- **2026-08-25** P5 ✅：git init + 27 文件提交（commit 52540cd）→ https://github.com/ricky8848/mobile-ai（私有）。转公开：`gh repo edit mobile-ai --visibility public`。
+  **本地预览已启动**：mock :6420 + mailer MOCK（日志 /tmp/mai-mailer.log，pid 见 /tmp/mai-mock.pid、/tmp/mai-mailer.pid）；demo@example.com 已激活。
+  **剩余手动项（需用户）**：CF 部署控制面 wrangler token（control/README.md）；家中机器设 MAIL_ACCOUNTS 跑 mailer.mjs（真实 SMTP）。
+- **2026-08-28** 预览恢复 + E2E 复核（oMLX KV 事故后环境稳定）：旧 mock/mailer 进程已失 → nohup 常驻重启
+  （pid 见 /tmp/mai-mock.pid、/tmp/mai-mailer.pid；mock 日志 /tmp/mai-mock.log）。Mock 为内存态 → 旧会话丢失，
+  重播种 demo@example.com（order-paid）→ 新码 MAI-2QTQ7B。全旅程 E2E ✅：mailer 发认证码邮件（MOCK）→
+  apply → magic link 登录 302→/me → /me 显示已激活+码。
+  用户访问：magic link 登录（MOCK 模式链接在 /tmp/mai-mailer.log）→ 打开 http://127.0.0.1:6420/me。
+  部署准备：control/ 已装 wrangler@4.127.0（npm EPERM→`--cache /tmp/mai-npm-cache` 绕过；wrangler 写
+  ~/.wrangler 的权限问题在部署时处理）。剩余手动项不变：CF 凭据 + MAIL_ACCOUNTS。
