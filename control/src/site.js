@@ -51,6 +51,13 @@ select,input[type=text],input[type=password]{padding:9px 12px;font-size:14px;bor
 .qr img{width:150px;height:auto;border-radius:10px}
 .qr-ph{width:150px;min-height:120px;border:1.5px dashed var(--border);border-radius:12px;display:flex;
   align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:12px;padding:8px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:6px}
+.tile{border:1px solid var(--border);border-radius:12px;padding:10px 12px;min-width:0}
+.tile .l{font-size:11px;color:var(--muted);white-space:nowrap}
+.tile .n{font-size:24px;font-weight:700;letter-spacing:-.01em;margin-top:2px;white-space:nowrap}
+.tile .s{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap}
+#live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:6px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 `;
 
 function page(title, body) {
@@ -107,7 +114,7 @@ export function loginErrorPage(msg) {
 }
 
 /* ---------------- 我的页面：认证码 + 绑定状态 ---------------- */
-export function mePage(p, portalBase, domain = 'newapi.email', pay) {
+export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}) {
   const b = p.binding;
   const bindCard = b ? `
 <div class="card">
@@ -126,6 +133,7 @@ export function mePage(p, portalBase, domain = 'newapi.email', pay) {
   return page('我的页面 · 移动AI', `
 <div class="top"><span class="mark">mobile ai</span>
 <button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('/site/logout',{method:'POST'}).then(()=>location.href='/')">退出</button></div>
+${flags.justPaid ? '<div class="card" style="border-color:rgba(52,199,89,.45)"><b style="color:var(--ok)">支付成功 ✓</b><p style="font-size:13px;color:var(--muted);margin:6px 0 0">认证码已发放（见下方）并同步至邮箱。若尚未显示，请 10 秒后刷新。</p></div>' : ''}
 <div class="card">
 <label>账号</label>
 <div class="kv"><span>邮箱</span><span>${esc(p.email)}</span></div>
@@ -143,7 +151,17 @@ ${bindCard}
 <script>function copyCode(el){navigator.clipboard.writeText('${p.code ? esc(p.code.code) : ''}').then(()=>{el.textContent='已复制 ✓';setTimeout(()=>el.textContent='复制',1500)})}</script>`);
 }
 
-/* ---------------- P6：付款卡片（/me 待付款状态；半自动 = 扫码 + 确认后自动发码） ---------------- */
+/* ---------------- P6/P7：付款卡片（/me 待付款状态） ---------------- */
+// P7：在线收款优先（Stripe Checkout，全球卡/Apple Pay → webhook 自动发码）；
+//     未配 Stripe 时：PAYMENT_ONLINE_URL 外链兜底（如 PayPal.me）→ 仍需人工确认。
+//     二维码/银行转账保留为备用渠道（半自动：管理端确认后发码）。
+function fmtMoney(cents, cur) {
+  const c = Number(cents) || 0;
+  const u = String(cur || 'usd').toLowerCase();
+  const sym = { usd: '$', cny: '¥', eur: '€', gbp: '£' }[u] || (String(cur || 'USD').toUpperCase() + ' ');
+  return sym + (c / 100).toFixed(2);
+}
+
 export function paymentCard(pay) {
   const p = pay || {};
   const methods = (p.methods && p.methods.length ? p.methods : [ { name: '支付宝' }, { name: '微信支付' } ]);
@@ -151,9 +169,21 @@ export function paymentCard(pay) {
  <div class="qr"><label>${esc(m.name)}</label>
  ${m.qrUrl ? `<img src="${esc(m.qrUrl)}" alt="${esc(m.name)}收款码">`
    : `<div class="qr-ph mono">${esc(m.name)}二维码<br>未配置</div>`}</div>`).join('');
-  return `
+  const online = p.stripeConfigured ? `
+<div class="card" style="border-color:rgba(52,199,89,.4)">
+<label>在线支付（推荐 · 全球可用）</label>
+<button id="pay-online" style="width:100%">Pay ${fmtMoney(p.amountCents, p.currency)} · 全球信用卡 / Apple Pay</button>
+<p style="font-size:12px;color:var(--muted);margin-top:8px">经 Stripe 安全支付；付款成功后<b>认证码自动发放</b>，无需等待人工确认。</p>
+<div class="msg" id="pay-m"></div>
+</div>` : p.onlineUrl ? `
 <div class="card">
-<label>付款（一次性）</label>
+<label>在线支付（全球可用）</label>
+<a href="${esc(p.onlineUrl)}" target="_blank" rel="noopener"><button style="width:100%">在线支付 →</button></a>
+<p style="font-size:12px;color:var(--muted);margin-top:8px">付款完成后等待确认（通常数小时内），认证码将自动发放。</p>
+</div>` : '';
+  return `${online}
+<div class="card">
+<label>扫码 / 银行转账（备用渠道）</label>
 <div class="kv"><span>金额</span><b>${esc(p.amountLabel || '¥39')}</b></div>
 <p style="font-size:12px;color:var(--muted);margin:6px 0 14px">${esc(p.note || '一次性付费 · 专属 URL + 开机自启自动重连，无订阅')}</p>
 <div class="row" style="gap:20px">${qrs}</div>
@@ -161,7 +191,16 @@ export function paymentCard(pay) {
 ① 扫码完成付款；银行转账请在备注填写<b>本邮箱</b>。
 ② 付款完成后等待确认（通常数小时内），认证码将<b>自动发放</b>到本页面并同步至邮箱。</p>
 <p style="font-size:12px;color:var(--muted)">已付款？无需额外操作——确认后本页自动显示认证码。</p>
-</div>`;
+</div>` + (p.stripeConfigured ? `
+<script>document.getElementById('pay-online').onclick = async () => {
+  const m = document.getElementById('pay-m'), b = document.getElementById('pay-online');
+  b.disabled = true; m.textContent = '正在创建安全支付链接…'; m.className = 'msg';
+  try { const r = await fetch('/site/pay/checkout', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.url) { location.href = d.url; return; }
+    m.textContent = '创建支付失败：' + (d.error || r.status); m.className = 'msg err'; b.disabled = false;
+  } catch (e) { m.textContent = '网络错误，请重试'; m.className = 'msg err'; b.disabled = false; }
+};</script>` : '');
 }
 
 /* ---------------- P6：管理端（/admin）—— token 登录 + 控制台 ---------------- */
@@ -194,6 +233,14 @@ export function adminDashboard(portalBase) {
 <div class="top"><span class="mark">mobile ai · admin</span>
 <button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('/admin/logout',{method:'POST'}).then(()=>location.href='/')">退出</button></div>
 <div class="card">
+<label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">实时总览<span id="live-dot"></span>
+<span id="stats-updated" style="font-weight:400;font-size:12px;color:var(--muted)"></span>
+<button class="mini ghost" id="stats-toggle">暂停刷新</button></label>
+<div class="tiles" id="stat-tiles"><div style="color:var(--muted);font-size:13px">加载中…</div></div>
+<div id="stripe-evs"></div>
+<p style="font-size:12px;color:var(--muted);margin-top:8px">在线 = 心跳在窗口内（默认 45min，客户端每 30min 一次）；收入按 Stripe/手动确认落库金额累计。</p>
+</div>
+<div class="card">
 <label>用户与发码 <span style="font-weight:400;font-size:12px">（确认收款 → 自动发码 + 邮件；试用码直接签发）</span></label>
 <table><thead><tr><th>邮箱</th><th>状态</th><th>创建时间</th><th style="width:170px">操作</th></tr></thead>
 <tbody id="u-body"><tr><td colspan=4 style="color:var(--muted)">加载中…</td></tr></tbody></table>
@@ -218,6 +265,30 @@ function badge(st){const m={active:['ok','在线'],grace:['warn','宽限'],revok
 function tsFmt(t){return t?new Date(Number(t)).toLocaleString('zh-CN'):'—'}
 async function j(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});
  return{ok:r.ok,d:await r.json().catch(()=>({}))}}
+/* ---- P7：实时总览（/admin/stats，10s 轮询）---- */
+function money(c,cur){const u=String(cur||'usd').toLowerCase();const s={usd:'$',cny:'¥',eur:'€',gbp:'£'}[u]||(String(cur||'USD').toUpperCase()+' ');
+ return s+((Number(c)||0)/100).toFixed(2)}
+function tile(n,l,s){return '<div class="tile"><div class="l">'+esc(l)+'</div><div class="n">'+n+'</div>'+(s?'<div class="s">'+esc(s)+'</div>':'')+'</div>'}
+async function loadStats(){const{ok,d}=await j('/admin/stats');if(!ok||!d)return;
+ document.getElementById('stat-tiles').innerHTML=
+  tile('<span style="color:var(--ok)">●</span> '+(d.online_tunnels??0),'在线隧道','心跳 <'+(d.online_window_min||45)+'min')+
+  tile(d.paid_users??0,'付款用户','累计订单 '+(d.orders_paid??0))+
+  tile(money(d.revenue_today_cents,d.currency),'今日收入','UTC 今日')+
+  tile(money(d.revenue_cents_total,d.currency),'累计收入')+
+  tile(d.users_total??0,'用户总数','待付款 '+(d.users_pending??0))+
+  tile(d.active_bindings??0,'活跃绑定','宽限 '+(d.grace_bindings??0))+
+  tile(d.codes_unused??0,'未使用码')+
+  tile(d.emails_queued??0,'邮件排队');
+ const evs=(d.stripe_events_recent||[]);
+ document.getElementById('stripe-evs').innerHTML=evs.length?('<div style="font-size:12px;color:var(--muted);margin-top:4px">最近在线收款（Stripe webhook）</div>'
+  +'<table><tbody>'+evs.map(e=>'<tr><td class="mono">'+tsFmt(e.created_at)+'</td><td class="mono">'+esc(e.email||'—')+'</td>'
+  +'<td>'+money(e.amount_cents,d.currency)+'</td><td class="mono" style="font-size:12px">'+esc(e.type||'')+'</td></tr>').join('')+'</tbody></table>'):'';
+ document.getElementById('stats-updated').textContent='更新 '+new Date().toLocaleTimeString('zh-CN')}
+let statsTimer=null,statsOn=true;
+function startStats(){stopStats();if(statsOn)statsTimer=setInterval(loadStats,10e3)}
+function stopStats(){if(statsTimer){clearInterval(statsTimer);statsTimer=null}}
+document.getElementById('stats-toggle').onclick=function(){statsOn=!statsOn;this.textContent=statsOn?'暂停刷新':'恢复刷新';
+ if(statsOn){loadStats();startStats()}else stopStats()};
 async function loadUsers(){const{ok,d}=await j('/admin/users');if(!ok){document.getElementById('u-body').innerHTML='<tr><td colspan=4 class="msg err">加载失败</td></tr>';return}
  document.getElementById('u-body').innerHTML=(d||[]).map(u=>'<tr><td class="mono">'+esc(u.email)+'</td>'
  +'<td>'+badge(u.status)+'</td><td>'+tsFmt(u.created_at)+'</td>'
@@ -240,12 +311,12 @@ document.body.addEventListener('click',async ev=>{const b=ev.target.closest('but
  if(act==='pay'){const method=prompt('收款渠道：alipay / wechat / bank','alipay');if(!method)return;
   const ref=prompt('收款备注/转账单号（可留空）','')||'';
   const{ok,d}=await j('/admin/order-paid',{email:em,method,ref});
-  if(ok&&!d.error){alert('收款已确认 ✓ 认证码已签发并发邮件：\\n\\n'+d.code);loadUsers()}
+  if(ok&&!d.error){alert('收款已确认 ✓ 认证码已签发并发邮件：\\n\\n'+d.code);loadUsers();loadStats()}
   else alert('失败：'+(d.error||ok));}
  if(act==='trial'){const{ok,d}=await j('/admin/issue-code',{email:em});
-  if(ok&&!d.error){alert('试用码已签发（含邮件）：\\n\\n'+d.code)}else alert('失败：'+(d.error||ok));}
+  if(ok&&!d.error){alert('试用码已签发（含邮件）：\\n\\n'+d.code);loadStats()}else alert('失败：'+(d.error||ok));}
  if(act==='revoke'){if(!confirm('吊销该绑定？对应隧道将立即失效。'))return;
-  const{ok,d}=await j('/admin/revoke',{id});if(ok){loadBindings()}else alert('失败：'+(d.error||ok));}});
-Promise.all([loadUsers(),loadBindings(),loadEmails()]);
+  const{ok,d}=await j('/admin/revoke',{id});if(ok){loadBindings();loadStats()}else alert('失败：'+(d.error||ok));}});
+Promise.all([loadStats(),startStats(),loadUsers(),loadBindings(),loadEmails()]);
 </script>`);
 }

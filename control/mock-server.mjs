@@ -5,7 +5,9 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
-  paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings } from './src/core.js';
+  paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings,
+  adminStats, ONLINE_WINDOW_MS } from './src/core.js';
+import { createStripeCheckout, handleStripeWebhook, signStripePayload, MOCK_WEBHOOK_SECRET } from './src/stripe.js';
 import { landingPage, loginErrorPage, mePage, adminLoginPage, adminDashboard } from './src/site.js';
 
 const PORT = Number(process.env.MOCK_PORT || 6420);
@@ -50,7 +52,75 @@ export const db = {
   bindingsWithUser: async (limit, status) => [...bindings.values()].filter((b) => !status || b.status === status)
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0)).slice(0, limit || 200)
     .map((b) => ({ ...b, email: users.get(b.user_id)?.email || null })),
+  // ---- P7：实时统计 + Stripe 事件审计 / 订单幂等（与 D1 适配器同口径）----
+  stats: async ({ onlineSince, dayStart }) => {
+    const bs = [...bindings.values()];
+    return { online_tunnels: bs.filter((b) => ['active', 'grace'].includes(b.status) && b.last_heartbeat >= onlineSince).length,
+      active_bindings: bs.filter((b) => b.status === 'active').length,
+      grace_bindings: bs.filter((b) => b.status === 'grace').length, total_bindings: bs.length,
+      users_total: users.size, users_active: [...users.values()].filter((u) => u.status === 'active').length,
+      users_pending: [...users.values()].filter((u) => u.status === 'pending').length,
+      paid_users: new Set(orders.filter((o) => o.status === 'paid').map((o) => o.user_id)).size,
+      orders_paid: orders.filter((o) => o.status === 'paid').length,
+      revenue_cents_total: orders.filter((o) => o.status === 'paid').reduce((s, o) => s + (Number(o.amount_cents) || 0), 0),
+      revenue_today_cents: orders.filter((o) => o.status === 'paid' && o.created_at >= dayStart).reduce((s, o) => s + (Number(o.amount_cents) || 0), 0),
+      orders_today: orders.filter((o) => o.status === 'paid' && o.created_at >= dayStart).length,
+      codes_unused: [...codes.values()].filter((c) => c.status === 'issued').length,
+      emails_queued: emailsArr.filter((e) => e.status === 'queued').length,
+      portal_sessions_active: [...sessionsMap.values()].filter((s) => s.expires_at >= Date.now()).length };
+  },
+  stripeEventExists: async (id) => stripeEvents.some((e) => e.stripe_event_id === String(id)),
+  createStripeEvent: async (r) => { stripeEvents.push({ ...r }); },
+  recentStripeEvents: async (limit = 5) => [...stripeEvents].sort((a, b) => b.created_at - a.created_at).slice(0, limit),
+  orderByRef: async (ref) => [...orders].reverse().find((o) => o.ref === String(ref)) || null,
+  unusedCodeForUser: async (uid) => [...codes.values()].find((c) => c.user_id === uid && c.status === 'issued') || null,
 };
+
+/* ---------------- P7：假 Stripe（STRIPE_MOCK=1）---------------- */
+// 内存态 checkout session；/mock-stripe/pay 用 signStripePayload 伪造带签名的
+// checkout.session.completed webhook → 走与生产完全相同的 handleStripeWebhook。
+const mockStripeSessions = new Map(); // session_id → {email, amountCents, currency}
+const stripeEvents = [];
+
+function mockStripePage(sessionId, portalBase) {
+  const s = mockStripeSessions.get(String(sessionId)) || {};
+  const u = String(s.currency || 'usd').toLowerCase();
+  const sym = { usd: '$', cny: '¥', eur: '€', gbp: '£' }[u] || (String(s.currency || 'USD').toUpperCase() + ' ');
+  const money = sym + ((Number(s.amountCents) || 3900) / 100).toFixed(2);
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Checkout · Stripe Test Mode</title></head>
+<body style="font-family:-apple-system,system-ui,sans-serif;background:#f6f8fa;margin:0;padding:40px 16px">
+<div style="max-width:380px;margin:0 auto;border:1px solid #d0d7de;border-radius:12px;background:#fff;padding:24px">
+<div style="font-size:12px;font-weight:700;color:#6e56cf;letter-spacing:.08em">STRIPE · TEST MODE（本地 mock）</div>
+<h1 style="font-size:20px;margin:14px 0 6px">移动AI — 一次性买断（隧道服务）</h1>
+<p style="font-size:26px;font-weight:700;margin:8px 0">${money}</p>
+<p style="font-size:13px;color:#57606a;margin:4px 0 20px">收款邮箱：${String(s.email || '')}</p>
+<button id="pay" style="width:100%;padding:12px;border:0;border-radius:8px;background:#635bff;color:#fff;font-size:15px;cursor:pointer">Pay ${money}</button>
+<a href="${String(portalBase).replace(/"/g, '&quot;')}/me" style="display:block;text-align:center;font-size:13px;color:#57606a;margin-top:12px">取消</a>
+<p id="m" style="font-size:13px;margin-top:12px;min-height:18px"></p>
+</div><script>
+document.getElementById('pay').onclick = async () => {
+  const m = document.getElementById('m'); document.getElementById('pay').disabled = true; m.textContent = '支付处理中…';
+  const r = await fetch('/mock-stripe/pay', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: '${String(sessionId).replace(/'/g, '')}' }) });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok && (d.received || d.duplicate)) { m.textContent = '✓ 支付成功，正在返回…'; setTimeout(() => location.href = '${String(portalBase).replace(/'/g, '')}/me?paid=1', 600); }
+  else { m.textContent = '支付失败：' + (d.error || r.status); document.getElementById('pay').disabled = false; }
+};</script></body></html>`;
+}
+
+// 伪造 Stripe checkout.session.completed（签名与生产 webhook 校验同路径）
+async function mockStripeComplete(sessionId, ts) {
+  const s = mockStripeSessions.get(String(sessionId));
+  if (!s) return { error: 'unknown session' };
+  const event = { id: 'evt_mock_' + Math.random().toString(36).slice(2, 14),
+    type: 'checkout.session.completed', created: Math.floor(ts / 1000),
+    data: { object: { id: String(sessionId), metadata: { email: s.email },
+      customer_details: { email: s.email }, amount_total: Number(s.amountCents) || 0, currency: (s.currency || 'usd').toLowerCase() } } };
+  const raw = JSON.stringify(event);
+  const sig = await signStripePayload(raw, process.env.STRIPE_WEBHOOK_SECRET || MOCK_WEBHOOK_SECRET);
+  return handleStripeWebhook(db, process.env, raw, sig, ts); // ← 与生产同一处理函数
+}
 
 /* ---------------- 假 CF（token/子域可验证流转，不碰网络） ---------------- */
 const cf = {
@@ -68,13 +138,29 @@ const html = (res, s) => { res.writeHead(200, { 'content-type': 'text/html; char
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  let body; try { body = req.method === 'POST' ? JSON.parse((await drain(req)) || '{}') : {}; } catch { body = {}; }
+  let body, rawBody; // P7：Stripe webhook 需原始 body（验签），不能先 JSON.parse
+  if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') rawBody = await drain(req);
+  else { try { body = req.method === 'POST' ? JSON.parse((await drain(req)) || '{}') : {}; } catch { body = {}; } }
   const ts = Date.now();
   const portalBase = process.env.PORTAL_BASE || 'http://127.0.0.1:' + PORT;
   try {
     if (req.method === 'POST' && url.pathname === '/api/activate') return out(res, await activate(db, cf, body, DOMAIN, ts));
     if (req.method === 'POST' && url.pathname === '/api/heartbeat') return out(res, await heartbeat(db, body, DOMAIN, ts));
     if (req.method === 'POST' && url.pathname === '/api/rotate') return out(res, await rotate(db, cf, body, DOMAIN, ts));
+    // ---- P7：Stripe webhook（与 Worker 同路径；验签即鉴权）----
+    if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
+      const r = await handleStripeWebhook(db, process.env, rawBody || '', req.headers['stripe-signature'] || '', ts);
+      const st = r && !r.error ? 200 : (r.error === 'webhook secret not configured' ? 503 : 400);
+      return json(res, r, st);
+    }
+    // ---- P7：假 Stripe 收银台（STRIPE_MOCK=1；/mock-stripe/pay → 带签名 webhook）----
+    if (req.method === 'GET' && url.pathname === '/mock-stripe/checkout') {
+      return html(res, mockStripePage(url.searchParams.get('session_id'), portalBase));
+    }
+    if (req.method === 'POST' && url.pathname === '/mock-stripe/pay') {
+      const r = await mockStripeComplete(body.session_id, ts);
+      return json(res, { received: !!(r && (r.ok || r.duplicate)), ...r }, r && r.error ? 400 : 200);
+    }
     // ---- 管理端（P6：/admin 控制台；Bearer ADMIN_TOKEN 或 mai_admin cookie）----
     const auth = req.headers['authorization'] || ''; // Node http：headers 是普通对象（Workers 侧用 .get）
     const adminTok = (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_admin='))?.slice(10);
@@ -105,6 +191,12 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(res, await adminBindings(db, { status: url.searchParams.get('status') }));
       if (req.method === 'GET' && url.pathname === '/admin/emails') return json(res, { queued: await db.listEmails('queued', 10),
         recent: await db.listEmails(null, Number(url.searchParams.get('limit')) || 20) });
+      if (req.method === 'GET' && url.pathname === '/admin/stats') { // P7：实时总览（前端 10s 轮询）
+        const onlineMs = Number(process.env.ONLINE_WINDOW_MS) > 0 ? Number(process.env.ONLINE_WINDOW_MS) : ONLINE_WINDOW_MS;
+        const s = await adminStats(db, ts, onlineMs);
+        return json(res, { ...s, currency: paymentInfoFromEnv(process.env).currency, online_window_min: Math.round(onlineMs / 60e3),
+          stripe_events_recent: await db.recentStripeEvents(5) });
+      }
       if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(res, await revokeBinding(db, body.id, ts));
       if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json(res, { emails: await db.listEmails('queued', 10) });
       if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json(res, { ok: true }); }
@@ -122,7 +214,24 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
       if (!u) { res.writeHead(302, { location: '/' }); return res.end(); }
-      return html(res, mePage(await mePayload(db, u), portalBase, DOMAIN, paymentInfoFromEnv(process.env)));
+      return html(res, mePage(await mePayload(db, u), portalBase, DOMAIN, paymentInfoFromEnv(process.env),
+        { justPaid: url.searchParams.get('paid') === '1' })); // P7：Stripe success_url 回跳
+    }
+    if (req.method === 'POST' && url.pathname === '/site/pay/checkout') { // P7：Stripe Checkout（mock 或真实）
+      const u = await sessionUser(db, (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
+      if (!u || u.status !== 'pending') { res.writeHead(302, { location: '/me' }); return res.end(); }
+      if (await db.unusedCodeForUser(u.id)) return json(res, { error: '你已有未使用的认证码，无需重复付款' }, 409);
+      const pay = paymentInfoFromEnv(process.env);
+      if (process.env.STRIPE_MOCK) { // 假 Stripe：内存 session → /mock-stripe/checkout
+        const id = 'cs_mock_' + Math.random().toString(36).slice(2, 14);
+        mockStripeSessions.set(id, { email: u.email, amountCents: pay.amountCents, currency: pay.currency });
+        return json(res, { url: portalBase + '/mock-stripe/checkout?session_id=' + id, session_id: id });
+      }
+      try {
+        const s = await createStripeCheckout(process.env, { email: u.email, amountCents: pay.amountCents, currency: pay.currency,
+          productName: '移动AI — 一次性买断（隧道服务）', successUrl: portalBase + '/me?paid=1', cancelUrl: portalBase + '/me' });
+        return json(res, { url: s.url, session_id: s.id });
+      } catch (e) { return json(res, { error: '创建支付会话失败：' + String(e.message || e) }, 502); }
     }
     if (req.method === 'POST' && url.pathname === '/site/logout') { res.writeHead(302, { location: '/', 'set-cookie': 'mai_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' }); return res.end(); }
     // 安装脚本静态分发（与 wrangler assets static/ 同集合）

@@ -84,3 +84,16 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL            -- unix ms（默认 +7d）
 );
+
+-- ---- P7：Stripe 在线收款（全球卡/Apple Pay）事件审计表 ----
+CREATE TABLE IF NOT EXISTS stripe_events (
+  id              TEXT PRIMARY KEY,          -- 'se_' + 随机串（worker 侧生成）
+  stripe_event_id TEXT NOT NULL UNIQUE,      -- evt_...（Stripe 事件 id，幂等去重）
+  type            TEXT NOT NULL,             -- checkout.session.completed | ...
+  email           TEXT,                      -- 归属用户（session.metadata.email）
+  amount_cents    INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'processed', -- processed | error
+  created_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stripe_events_type ON stripe_events(type, created_at);

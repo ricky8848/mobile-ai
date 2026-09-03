@@ -224,7 +224,23 @@ export function paymentInfoFromEnv(env = {}) {
   if (env.PAYMENT_AMOUNT) p.amountLabel = String(env.PAYMENT_AMOUNT);
   if (env.PAYMENT_NOTE) p.note = String(env.PAYMENT_NOTE);
   for (const m of p.methods) if (env[m.envKey]) m.qrUrl = String(env[m.envKey]);
+  // P7：在线收款（Stripe Checkout，全球卡/Apple Pay）+ 通用外链兜底
+  p.amountCents = Number(env.PAYMENT_AMOUNT_CENTS) || 3900;
+  p.currency = String(env.PAYMENT_CURRENCY || 'usd').toLowerCase(); // Stripe 计收币种（全局收款默认 usd）
+  p.stripeConfigured = !!(env.STRIPE_SECRET_KEY || env.STRIPE_MOCK); // 配了密钥（或 mock）→ /me 显示「在线支付」
+  p.onlineUrl = env.PAYMENT_ONLINE_URL || null;                    // 未配 Stripe 时的兜底外链（如 PayPal.me）
   return p;
+}
+
+/* ---------------- P7：管理端实时统计（/admin/stats，前端 10s 轮询） ---------------- */
+// 「在线」= 心跳在窗口内（客户端每 30min 一次 → 默认 45min，env ONLINE_WINDOW_MS 可覆盖）。
+export const ONLINE_WINDOW_MS = 45 * 60e3;
+
+// db.stats({onlineSince, dayStart}) → 原始计数（D1/内存各实现，口径见 schema.sql）
+export async function adminStats(db, ts, onlineMs = ONLINE_WINDOW_MS) {
+  const dayStart = new Date(ts).setUTCHours(0, 0, 0, 0); // UTC 日界（今日收入口径）
+  const s = await db.stats({ onlineSince: ts - onlineMs, dayStart });
+  return { ...s, ts };
 }
 
 /* ---------------- P6：管理端会话（cookie mai_admin，与门户 mai_session 分离） ---------------- */

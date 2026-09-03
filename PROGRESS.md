@@ -36,6 +36,7 @@ new dsh/
 | P4 | site/ 官网门户 + 自动客服 | ✅ 2026-08-25 src/site.js（落地/登录/我的页面），全旅程 E2E 通过 |
 | P5 | GitHub 发布 + 其他平台列表（需用户确认账号/仓库名） | ✅ 2026-08-25 已推私有仓 ricky8848/mobile-ai（可一键转公开） |
 | P6 | 收费功能完善（二维码+确认后自动发码，按计划半自动） + /admin 管理控制台 | ✅ 2026-08-28 mock E2E 全过（生产 CF 部署待凭据） |
+| P7 | Stripe 全球在线收款（Checkout+webhook 自动发码，二维码保留为备用） + /admin 实时总览（在线/付款用户等 10s 轮询） | ✅ 2026-08-28 E2E 31/31（Stripe mock）；上线待用户注册 Stripe + CF 部署 |
 
 ## 检查点日志
 
@@ -103,3 +104,37 @@ new dsh/
     mock createBinding 缺 created_at/updated_at、mock portalBase TDZ。
   - **用户待给**：真实收款二维码 URL + 金额（wrangler vars / env，见 control/wrangler.jsonc 注释）；
     生产 ADMIN_TOKEN（mock 用 dev-admin-token）。本地管理台：http://127.0.0.1:6420/admin
+- **2026-08-28** P7 ✅ Stripe 全球在线收款 + /admin 实时总览（用户两项新需求）：
+  - **①全球在线收款 = Stripe Checkout**（`src/stripe.js`）：/me 待付款用户见「在线支付」按钮
+    （Pay $39.00 · 全球信用卡/Apple Pay，金额=PAYMENT_CURRENCY+PAYMENT_AMOUNT_CENTS）→
+    POST /site/pay/checkout 建一次性 Checkout session（动态 price_data，无需预建 Product）→
+    Stripe 托管收银台 → webhook POST /api/webhooks/stripe（HMAC-SHA256 验签 ±5min 防重放、
+    raw body）→ `checkout.session.completed` → markOrderPaid(method=stripe, ref=session id)
+    **自动发码+邮件，无需人工确认**。幂等双保险：stripe_events.stripe_event_id UNIQUE +
+    orders.ref；非 2xx Stripe 自动重试。防重复付款：已有未用码 →409 / 已激活 →302。
+    二维码/银行转账保留为备用渠道（半自动不变）；未配 Stripe 时可挂 PAYMENT_ONLINE_URL
+    外链兜底（如 PayPal.me）。schema + stripe_events 审计表（sqlite3 :memory: 验证）。
+    **mock E2E**：STRIPE_MOCK=1 → /mock-stripe/checkout 假收银台 + signStripePayload
+    伪造带签名 webhook，走与生产**同一** handleStripeWebhook 代码路径。
+  - **②/admin 实时总览**：GET /admin/stats（Bearer/cookie 双鉴权）→ 前端 10s 轮询 +
+    「暂停/恢复刷新」+ 更新时刻。指标：在线隧道（心跳<45min，env ONLINE_WINDOW_MS 可覆盖；
+    客户端心跳 30min）、活跃/宽限绑定、用户总数（待付款 x）、**付款用户数**、今日收入
+    （UTC 日界）/累计收入（amount_cents）、未使用码、邮件排队 + 最近 Stripe webhook 事件列表。
+    D1/内存双实现同口径（core.adminStats 纯函数 + db.stats）。
+  - **E2E ✅ 31/31**（`control/e2e-p7.mjs`，独立 mock :6431）：apply→magic link（邮件队列解析）
+    →登录→/me 付款卡（在线支付+QR 备用）→checkout→假收银台→带签名 webhook→自动发码
+    →/me?paid=1 成功横幅+码→stats（付款用户=1/revenue=$39/stripe_events）→重复 webhook
+    duplicate 且金额不变→坏签名/无签名头拒绝（400）→已付费再 checkout 302、有未用码 409
+    →activate+heartbeat→online_tunnels=1、bindings 带邮箱 JOIN、坏码 4xx→dashboard
+    「实时总览」渲染+stats 未鉴权 401。修复：fmtMoney usd→"$"（与收银台一致）、
+    e2e spawn cwd 用 fileURLToPath（空格路径 %20）。
+  - **预览已重启**：mock :6420（STRIPE_MOCK=1）+ mailer MOCK；demo@example.com 重播种
+    →新码 MAI-WTY9FB（收款确认 $39 alipay）；preview-p7@example.com 验证 /me 新付款卡。
+    pid：/tmp/mai-mock.pid、/tmp/mai-mailer.pid；日志 /tmp/mai-mock.log、/tmp/mai-mailer.log。
+  - **用户手动项（Stripe 注册，步骤详见 control/README.md「P7」）**：
+    1) dashboard.stripe.com 注册（个人/个体户；地区不支持则 Lemon Squeezy/Paddle）
+    2) Test mode → Developers → API keys → sk_test_... `wrangler secret put STRIPE_SECRET_KEY`
+    3) 部署后建 webhook：https://newapi.email/api/webhooks/stripe，只勾 checkout.session.completed
+       → whsec_... `wrangler secret put STRIPE_WEBHOOK_SECRET`
+    4) Test mode 卡号 4242... 全流程自测 → Live mode 换 sk_live_ + live webhook。
+    （二维码真实 URL/金额、CF 凭据等旧手动项不变。）

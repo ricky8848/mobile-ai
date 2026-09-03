@@ -20,6 +20,10 @@
     // "PAYMENT_QR_ALIPAY": "https://.../alipay-qr.png",
     // "PAYMENT_QR_WECHAT": "https://.../wechat-qr.png",
     // "PAYMENT_AMOUNT_CENTS": 3900   // orders.amount_cents 记录值
+    // P7 Stripe 在线收款（全球卡/Apple Pay；注册与 webhook 步骤见 control/README.md「P7」）：
+    // "PAYMENT_CURRENCY": "usd"       // Stripe 计收币种（缺省 usd；与 PAYMENT_AMOUNT_CENTS 配套）
+    // "PAYMENT_ONLINE_URL": ""        // 未配 Stripe 时的兜底外链（如 PayPal.me），可选
+    // "ONLINE_WINDOW_MS": 2700000     // /admin「在线」判定窗口（缺省 45min；客户端心跳 30min）
   },
   // 一键安装脚本 + 客户端源码（curl -fsSL https://newapi.email/i.sh | bash）
   "assets": { "directory": "./static" }
@@ -27,3 +31,6 @@
   //   CF_API_TOKEN    — Cloudflare account API token（隧道/DNS 管理权限）
   //   CF_ACCOUNT_ID   — Cloudflare account id
   //   ADMIN_TOKEN     — /admin/* 管理端鉴权（Bearer）
+  // P7 Stripe（在线收款；注册步骤见 control/README.md「P7」）：
+  //   STRIPE_SECRET_KEY    — sk_test_... / sk_live_...（Dashboard → Developers → API keys）
+  //   STRIPE_WEBHOOK_SECRET — whsec_...（Dashboard → Developers → Webhooks，事件 checkout.session.completed）
