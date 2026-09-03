@@ -27,6 +27,8 @@ jget() { node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{co
 say "0/6 前置检查"
 command -v cloudflared >/dev/null || fail "cloudflared 未安装：brew install cloudflared"
 command -v node >/dev/null || fail "node 未安装（需 ≥18）"
+NODE_BIN=$(command -v node)      # launchd 的 PATH 不含 /opt/homebrew/bin，plist 必须绝对路径
+CF_BIN=$(command -v cloudflared)
 CF_JSON=$(ls "$HOME/.cloudflared/"*.json 2>/dev/null | head -1)
 [ -n "${CF_JSON:-}" ] && [ -f "$CF_JSON" ] || fail "未找到 ~/.cloudflared/*.json — 请先在终端运行：cloudflared tunnel login"
 CF_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('$CF_JSON','utf8')).api_token || ''")
@@ -93,7 +95,7 @@ cloudflared tunnel route dns "$TUNNEL_ID" "$PORTAL_HOST" >/dev/null 2>&1 && echo
 say "5/6 启动服务（server.mjs + cloudflared；已在跑则跳过）"
 SRV_PID=""
 if ! curl -sf --max-time 3 "http://127.0.0.1:$API_PORT/healthz" >/dev/null 2>&1; then
-  nohup node "$CTL_DIR/server.mjs" >> /tmp/mai-control.log 2>&1 &
+  nohup "$NODE_BIN" "$CTL_DIR/server.mjs" >> /tmp/mai-control.log 2>&1 &
   SRV_PID=$!; echo $SRV_PID > /tmp/mai-mock.pid   # 兼容旧 pid 文件位置
   sleep 1; curl -sf --max-time 3 "http://127.0.0.1:$API_PORT/healthz" >/dev/null 2>&1 \
     && echo "✓ server.mjs :$API_PORT (pid $SRV_PID)" || fail "server.mjs 启动失败，看 /tmp/mai-control.log"
@@ -102,7 +104,7 @@ else
 fi
 CF_PID=""
 if ! pgrep -f "cloudflared.*run $TUNNEL_ID" >/dev/null 2>&1; then
-  nohup cloudflared tunnel --no-autoupdate run "$TUNNEL_ID" >> /tmp/mai-cloudflared.log 2>&1 &
+  nohup "$CF_BIN" tunnel --no-autoupdate run "$TUNNEL_ID" >> /tmp/mai-cloudflared.log 2>&1 &
   CF_PID=$!; echo $CF_PID > /tmp/mai-cf.pid
   echo "✓ cloudflared（$TUNNEL_ID）已启动 (pid $CF_PID) → /tmp/mai-cloudflared.log"
 else
@@ -127,7 +129,7 @@ mk_agent() { # $1=label 其余为 argv（元素内不可含双引号）；返回
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1
   launchctl bootstrap "gui/$(id -u)" "$LA/$label.plist" && return 0 || { echo "⚠ $label bootstrap 失败（手动：launchctl load $LA/$1.plist）"; return 1; }
 }
-if mk_agent com.mobileai.control node "$CTL_DIR/server.mjs"; then
+if mk_agent com.mobileai.control "$NODE_BIN" "$CTL_DIR/server.mjs"; then
   echo "✓ com.mobileai.control（重启自启）"
   [ -n "$SRV_PID" ] && kill "$SRV_PID" >/dev/null 2>&1 && echo "  · nohup 实例已交还给 launchd"
 fi
@@ -136,14 +138,14 @@ if grep -qs '^MAIL_ACCOUNTS=' "$HOME/.mobileai/control.env" 2>/dev/null; then
   cat > "$HOME/.mobileai/run-mailer.sh" <<EOF2
 #!/bin/bash
 set -a; . "\$HOME/.mobileai/control.env" 2>/dev/null || true
-exec node "$CTL_DIR/mailer.mjs"
+exec "$NODE_BIN" "$CTL_DIR/mailer.mjs"
 EOF2
   chmod +x "$HOME/.mobileai/run-mailer.sh"
   if mk_agent com.mobileai.mailer /bin/bash "$HOME/.mobileai/run-mailer.sh"; then echo "✓ com.mobileai.mailer（重启自启）"; fi
 else
   echo "· mailer LaunchAgent 跳过（未配置 MAIL_ACCOUNTS；配好后重跑本脚本即可）"
 fi
-if mk_agent com.mobileai.cloudflared cloudflared tunnel --no-autoupdate run "$TUNNEL_ID"; then
+if mk_agent com.mobileai.cloudflared "$CF_BIN" tunnel --no-autoupdate run "$TUNNEL_ID"; then
   echo "✓ com.mobileai.cloudflared（重启自启）"
   [ -n "$CF_PID" ] && kill "$CF_PID" >/dev/null 2>&1 && echo "  · nohup 实例已交还给 launchd"
 fi
