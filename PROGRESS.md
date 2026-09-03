@@ -137,4 +137,43 @@ new dsh/
     3) 部署后建 webhook：https://newapi.email/api/webhooks/stripe，只勾 checkout.session.completed
        → whsec_... `wrangler secret put STRIPE_WEBHOOK_SECRET`
     4) Test mode 卡号 4242... 全流程自测 → Live mode 换 sk_live_ + live webhook。
+- **2026-09-03** P8 本地生产部署（免费先）+ 邮件完善 + GitHub 转公开：
+  - **域名现状**（dig 核实）：newapi.email 已在 Cloudflare（NS=cloudflare），但**根域 A 记录跑着既有
+    New API 网关（x-new-api-version v1.0.0-rc.8）——绝不动**。移动AI 门户改挂 **mai.newapi.email**
+    （CNAME → 控制面命名隧道）；用户数据面隧道仍 `<随机子域>.newapi.email`（精确记录优先于根域，无冲突）。
+  - **部署形态**：新增 `control/server.mjs` — Node24 + 内置 SQLite（node:sqlite，D1 兼容垫片
+    prepare/bind/first/all/run），**直接跑 src/index.js 同一份 Worker 代码**（HTTP↔Request/Response
+    桥接），零路由重复；数据持久化 `~/.mobileai/control.db`（schema.sql 幂等初始化）；
+    env：process.env > `~/.mobileai/control.env`（MAI_HOME 可覆盖数据目录，测试/沙箱用）。
+    cloudflared（本机已装 2026.5.0）命名隧道 mai-control：mai.newapi.email → 127.0.0.1:6420。
+    `control/deploy-local.sh` 一键部署（前置：用户跑一次 `cloudflared tunnel login`）：
+    CF token 读取/账号 id/control.env(ADMIN_TOKEN 生成,600)/隧道幂等创建/CNAME upsert/
+    nohup 启动/LaunchAgent×3（control/mailer/cloudflared，bootstrap 成功即接管 nohup）/公网 healthz 验证。
+    mailer LaunchAgent 走 `~/.mobileai/run-mailer.sh`（source control.env 拿 MAIL_ACCOUNTS/ADMIN_TOKEN）。
+  - **生产 bug 修复（smoke test 抓到）**：src/index.js **7 路由漏 await**
+    （/api/activate|heartbeat|rotate、/site/apply、/admin/order-paid|issue-code|revoke）——
+    副作用执行但响应变 `200 {}`（mock-server.mjs 全有 await，故历次 E2E 未暴露；真实 Worker 上
+    激活/付款确认/申请会全部静默失效）。已补 await。
+  - **邮件功能完善**：① /admin 邮件表「查看」按钮 → 正文弹窗（magic link/认证码；排查 +
+    MOCK 模式下直接取链接，site.js）② mailer.mjs **failed 邮件自动重试**（MAIL_RETRY_MS
+    缺省 5min，MOCK 跳过；修好 SMTP/授权码后无需手动重发）。真实发送仍需 MAIL_ACCOUNTS
+    （gmail/qq/163/outlook SMTP 推断已支持；QQ/163=授权码，Gmail=应用专用密码）。
+  - **客户端域名切换**：mobileai.mjs apiBase 缺省、i.sh/i.ps1 BASE 缺省、guide.md →
+    https://mai.newapi.email（control/static/ 已同步；本地测试 MOBILEAI_BASE=http://127.0.0.1:6420，
+    mock 根路径分发无 /client）。
+  - **回归**：新增 `control/smoke-server.mjs`（server.mjs 全旅程，:6421 临时 SQLite）
+    **16/16 PASS**（healthz/apply→邮件正文解析 magic link/登录 302//me 待付款卡+QR 备用（无 Stripe
+    按钮）/坏链接页/试用码→/me 显示码（试用不激活，仍待付款确认）/order-paid→发码+无 error/
+    activate 无 CF token→4xx「隧道创建失败」优雅报错/stats 口径/未鉴权 401/dashboard+邮件查看按钮）；
+    e2e-p7.mjs 复跑 **31/31**（site.js 共享改动不破坏 mock 路径）。
+  - **GitHub 转公开**：ricky8848/mobile-ai private → public（对外可见；移动端功能 = 手机开
+    https://mai.newapi.email，门户本身移动优先）。
+  - **用户手动项（部署收尾）**：① 终端跑 `cloudflared tunnel login`（浏览器 OAuth，token 存
+    ~/.cloudflared/*.json；权限较宽，日后可在 CF dashboard → My Profile → API Tokens 撤销）
+    ② `bash "new dsh/control/deploy-local.sh"`（或让我代跑）→ 验证 https://mai.newapi.email
+    ③ control.env 加 `MAIL_ACCOUNTS="邮箱:授权码"` + 重跑 deploy-local.sh → mailer 真发信
+    （验证：/admin「邮件队列」状态=已发送 + 真实收件箱收到 magic link）。
+  - **已知缺口**：用户隧道无 CF Access 邮箱验证（guide.md 第4步为未来项；现安全 = URL 保密 +
+    机器码单终端绑定 + 轮换/吊销）；Stripe 未注册（在线支付按钮隐藏，QR 备用渠道占位待真实收款码）；
+    控制面与数据面同机 = 家中 Mac（免费先，机器需常驻）。
     （二维码真实 URL/金额、CF 凭据等旧手动项不变。）

@@ -1,8 +1,8 @@
 # mobile ai — 移动AI · one-click installer (Windows PowerShell)
 # MIT License — Copyright (c) 2026 ricky8848
 #
-# Usage:   irm https://newapi.email/i.ps1 | iex
-# Local:   $env:MOBILEAI_BASE='http://127.0.0.1:8443/client'; irm .\i.ps1 | iex
+# Usage:   irm https://mai.newapi.email/i.ps1 | iex
+# Local:   $env:MOBILEAI_BASE='http://127.0.0.1:6420'; irm .\i.ps1 | iex
 #
 # What it does — and nothing else:
 #   1. checks Node.js >= 18 (prints install hint if missing)
@@ -12,7 +12,7 @@
 # cloudflared itself is downloaded + SHA-256 verified by mobileai.mjs on first start.
 $ErrorActionPreference = 'Stop'
 
-$Base = if ($env:MOBILEAI_BASE) { $env:MOBILEAI_BASE } else { 'https://newapi.email/client' }
+$Base = if ($env:MOBILEAI_BASE) { $env:MOBILEAI_BASE } else { 'https://mai.newapi.email' }
 $Maid = Join-Path $env:USERPROFILE '.mobileai'
 
 Write-Host "[mobile ai] 移动AI · installer (base: $Base)"

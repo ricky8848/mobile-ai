@@ -10,6 +10,7 @@
 //   MAIL_FROM_NAME  发件人显示名（默认「移动AI」）
 //   POLL_MS         轮询间隔 ms（默认 5000）
 //   MAIL_MOCK=1     MOCK：不真发，打印到 stdout（本地 E2E / 调试）
+//   MAIL_RETRY_MS   failed 邮件重试间隔 ms（默认 300000 = 5min；修好 SMTP 后自动重发，无需手动）
 
 let nodemailer = null;
 try { ({ default: nodemailer } = await import('nodemailer')); } catch {}
@@ -18,6 +19,7 @@ const API = process.env.MOBILEAI_API || 'http://127.0.0.1:6420';
 const TOKEN = process.env.ADMIN_TOKEN || 'dev-admin-token';
 const MOCK = !!process.env.MAIL_MOCK;
 const INTERVAL_MS = Number(process.env.POLL_MS || 5000);
+const RETRY_MS = Number(process.env.MAIL_RETRY_MS || 300 * 1000);
 
 function smtpFor(user) {
   const d = (user.split('@')[1] || '').toLowerCase();
@@ -44,7 +46,10 @@ async function sendOne(email) {
 async function tick() {
   try {
     const q = await j('/admin/email-queue');
-    for (const e of q.d.emails || []) {
+    // failed 邮件自动重试（修好 SMTP/授权码后无需手动；间隔 MAIL_RETRY_MS，MOCK 模式跳过）
+    let retryList = [];
+    if (!MOCK) { try { const f = await j('/admin/emails?limit=50'); retryList = (f.d.recent || []).filter((e) => e.status === 'failed' && Date.now() - Number(e.updated_at || 0) >= RETRY_MS); } catch {} }
+    for (const e of [...(q.d.emails || []), ...retryList]) {
       try { await sendOne(e); await j('/admin/email-result', { id: e.id, ok: true }); console.log('[mailer] sent ' + e.id); }
       catch (err) { try { await j('/admin/email-result', { id: e.id, ok: false, error: String(err.message || err) }); } catch {} console.error('[mailer] failed ' + e.id + ':', String(err.message || err)); }
     }

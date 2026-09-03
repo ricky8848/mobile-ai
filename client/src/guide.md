@@ -39,8 +39,8 @@
 
 **第 1 步 · 运行命令**
 ```sh
-curl -fsSL https://newapi.email/i.sh | bash        # macOS / Linux
-irm https://newapi.email/i.ps1 | iex               # Windows PowerShell
+curl -fsSL https://mai.newapi.email/i.sh | bash    # macOS / Linux
+irm https://mai.newapi.email/i.ps1 | iex           # Windows PowerShell
 ```
 - 你应看到：终端输出"下载组件 → 启动本地控制台"。
 - 没看到？→ 第 6 节「命令报错」。

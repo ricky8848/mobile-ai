@@ -2,8 +2,8 @@
 # mobile ai — 移动AI · one-click installer (macOS / Linux)
 # MIT License — Copyright (c) 2026 ricky8848
 #
-# Usage:   curl -fsSL https://newapi.email/i.sh | bash
-# Local:   MOBILEAI_BASE=http://127.0.0.1:8443/client bash i.sh   (dev/test)
+# Usage:   curl -fsSL https://mai.newapi.email/i.sh | bash
+# Local:   MOBILEAI_BASE=http://127.0.0.1:6420 bash i.sh   (dev/test，本地 mock 控制面)
 #
 # What it does — and nothing else:
 #   1. checks Node.js >= 18 (prints install hint if missing)
@@ -13,7 +13,7 @@
 # cloudflared itself is downloaded + SHA-256 verified by mobileai.mjs on first start.
 set -euo pipefail
 
-BASE="${1:-${MOBILEAI_BASE:-https://newapi.email/client}}"
+BASE="${1:-${MOBILEAI_BASE:-https://mai.newapi.email}}"
 MAI_DIR="$HOME/.mobileai"
 
 echo "[mobile ai] 移动AI · installer (base: $BASE)"

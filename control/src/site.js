@@ -252,10 +252,18 @@ export function adminDashboard(portalBase) {
 </div>
 <div class="card">
 <label>邮件队列 <span id="e-count" style="font-weight:400;font-size:12px"></span></label>
-<table><thead><tr><th>收件人</th><th>主题</th><th>状态</th><th>创建时间</th></tr></thead>
-<tbody id="e-body"><tr><td colspan=4 style="color:var(--muted)">加载中…</td></tr></tbody></table>
-<p style="font-size:12px;color:var(--muted);margin-top:8px">队列由 mailer.mjs（家中机器常驻）轮询发出；MOCK 模式打印到 /tmp/mai-mailer.log。</p>
+<table><thead><tr><th>收件人</th><th>主题</th><th>状态</th><th>创建时间</th><th style="width:70px">操作</th></tr></thead>
+<tbody id="e-body"><tr><td colspan=5 style="color:var(--muted)">加载中…</td></tr></tbody></table>
+<p style="font-size:12px;color:var(--muted);margin-top:8px">队列由 mailer.mjs（家中机器常驻）轮询发出；MOCK 模式打印到 /tmp/mai-mailer.log。点「查看」看正文（magic link / 认证码）。</p>
 </div>
+<div id="mail-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;padding:24px;overflow:auto">
+<div style="max-width:680px;margin:24px auto;background:#fff;color:#1d1d1f;border:1px solid rgba(0,0,0,.2);border-radius:14px;padding:20px 22px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+<b id="mail-modal-subject" style="font-size:15px"></b>
+<button class="mini ghost" onclick="closeMailModal()">关闭</button></div>
+<p id="mail-modal-meta" style="font-size:12px;color:#86868b;margin-bottom:8px"></p>
+<pre id="mail-modal-body" style="white-space:pre-wrap;word-break:break-all;font-size:13px;background:rgba(125,125,130,.08);border-radius:10px;padding:14px;max-height:60vh;overflow:auto;margin:0"></pre>
+</div></div>
 <footer>移动AI 管理端 · ${esc(portalBase || '')}</footer>` + `
 <script>
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -303,9 +311,17 @@ async function loadBindings(){const{ok,d}=await j('/admin/bindings');if(!ok){doc
  ||'<tr><td colspan=7 style="color:var(--muted)">暂无绑定</td></tr>'}
 async function loadEmails(){const{ok,d}=await j('/admin/emails?limit=20');if(!ok)return;
  document.getElementById('e-count').textContent='（排队中 '+(d.queued||[]).length+' 封）';
+ for(const e of [...(d.recent||[]),...(d.queued||[])]) if(e&&e.id) mailCache[e.id]=e;
  document.getElementById('e-body').innerHTML=((d.recent)||[]).map(e=>'<tr><td class="mono">'+esc(e.to_email)+'</td>'
- +'<td>'+esc(e.subject||'')+'</td><td>'+badge(e.status)+'</td><td>'+tsFmt(e.created_at)+'</td></tr>').join('')
- ||'<tr><td colspan=4 style="color:var(--muted)">暂无邮件</td></tr>'}
+ +'<td>'+esc(e.subject||'')+'</td><td>'+badge(e.status)+'</td><td>'+tsFmt(e.created_at)+'</td>'
+ +'<td><button class="mini ghost" data-act="emailview" data-id="'+esc(e.id)+'">查看</button></td></tr>').join('')
+ ||'<tr><td colspan=5 style="color:var(--muted)">暂无邮件</td></tr>'}
+let mailCache={}; // id → 邮件行（含正文；「查看」弹窗用）
+function openMailModal(e){document.getElementById('mail-modal-subject').textContent=e.subject||'（无主题）';
+ document.getElementById('mail-modal-meta').innerHTML='收件人：'+esc(e.to_email||'')+' · '+badge(e.status)+' · 创建 '+tsFmt(e.created_at)
+ +(e.error?'<br>错误：'+esc(e.error):'');
+ document.getElementById('mail-modal-body').textContent=e.body_text||'';document.getElementById('mail-modal').style.display='block'}
+function closeMailModal(){document.getElementById('mail-modal').style.display='none'}
 document.body.addEventListener('click',async ev=>{const b=ev.target.closest('button[data-act]');if(!b)return;
  const act=b.dataset.act,em=b.dataset.em,id=b.dataset.id;
  if(act==='pay'){const method=prompt('收款渠道：alipay / wechat / bank','alipay');if(!method)return;
@@ -316,7 +332,9 @@ document.body.addEventListener('click',async ev=>{const b=ev.target.closest('but
  if(act==='trial'){const{ok,d}=await j('/admin/issue-code',{email:em});
   if(ok&&!d.error){alert('试用码已签发（含邮件）：\\n\\n'+d.code);loadStats()}else alert('失败：'+(d.error||ok));}
  if(act==='revoke'){if(!confirm('吊销该绑定？对应隧道将立即失效。'))return;
-  const{ok,d}=await j('/admin/revoke',{id});if(ok){loadBindings();loadStats()}else alert('失败：'+(d.error||ok));}});
+  const{ok,d}=await j('/admin/revoke',{id});if(ok){loadBindings();loadStats()}else alert('失败：'+(d.error||ok));}
+ if(act==='emailview'){const e=mailCache[id];if(e)openMailModal(e);else loadEmails()}});
+document.getElementById('mail-modal').addEventListener('click',ev=>{if(ev.target.id==='mail-modal')closeMailModal()});
 Promise.all([loadStats(),startStats(),loadUsers(),loadBindings(),loadEmails()]);
 </script>`);
 }

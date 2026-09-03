@@ -128,9 +128,9 @@ export default {
     const ts = Date.now();
 
     // ---- 客户端 API（公开）----
-    if (req.method === 'POST' && url.pathname === '/api/activate') return out(activate(db, cf, body, env.DOMAIN, ts));
-    if (req.method === 'POST' && url.pathname === '/api/heartbeat') return out(heartbeat(db, body, env.DOMAIN, ts));
-    if (req.method === 'POST' && url.pathname === '/api/rotate') return out(rotate(db, cf, body, env.DOMAIN, ts));
+    if (req.method === 'POST' && url.pathname === '/api/activate') return out(await activate(db, cf, body, env.DOMAIN, ts));
+    if (req.method === 'POST' && url.pathname === '/api/heartbeat') return out(await heartbeat(db, body, env.DOMAIN, ts));
+    if (req.method === 'POST' && url.pathname === '/api/rotate') return out(await rotate(db, cf, body, env.DOMAIN, ts));
 
     // ---- P7：Stripe webhook（验签即鉴权；非 2xx → Stripe 自动重试）----
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
@@ -142,7 +142,7 @@ export default {
     // ---- 门户（P4：落地页 / magic link 登录 / 我的页面）----
     const portalBase = env.PORTAL_BASE || ('https://' + env.DOMAIN);
     if (req.method === 'GET' && url.pathname === '/') return html(landingPage());
-    if (req.method === 'POST' && url.pathname === '/site/apply') return out(apply(db, body, portalBase, ts));
+    if (req.method === 'POST' && url.pathname === '/site/apply') return out(await apply(db, body, portalBase, ts));
     if (req.method === 'GET' && url.pathname === '/login') {
       const uid = await consumeMagicLink(db, url.searchParams.get('token'), ts);
       if (!uid) return html(loginErrorPage());
@@ -194,8 +194,8 @@ export default {
       if (!adminOk) return json({ error: 'unauthorized' }, 401);
       const db2 = db; // 便于阅读
       if (req.method === 'POST' && url.pathname === '/admin/user') { const u = await ensureUser(db2, body.email, ts); return json({ ok: true, email: u.email, status: u.status }); }
-      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(markOrderPaid(db2, { ...body, amountCents: Number(env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
-      if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(issueCode(db2, { email: body.email }, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(await markOrderPaid(db2, { ...body, amountCents: Number(env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(await issueCode(db2, { email: body.email }, ts));
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(await db2.listUsers());
       if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(await adminBindings(db2, { status: url.searchParams.get('status') }));
       if (req.method === 'GET' && url.pathname === '/admin/emails') return json({ queued: await db2.listEmails('queued', 10),
@@ -206,7 +206,7 @@ export default {
         return json({ ...s, currency: paymentInfoFromEnv(env).currency, online_window_min: Math.round(onlineMs / 60e3),
           stripe_events_recent: await db2.recentStripeEvents(5) });
       }
-      if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(revokeBinding(db2, body.id, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(await revokeBinding(db2, body.id, ts));
       if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json({ emails: await db2.listEmails('queued', 10) });
       if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db2, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json({ ok: true }); }
       return json({ error: 'not found' }, 404);
