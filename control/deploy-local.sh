@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
-# mobile ai — 本地生产部署（免费先）· deploy-local.sh
+# mobile ai — 本地生产部署（免费先）· deploy-local.sh 【现有隧道模式】
 #
-# 前置：cloudflared 已安装 + 终端跑过一次 `cloudflared tunnel login`（浏览器 OAuth）。
+# 设计定案（2026-09-04）：**不动既有 new-api-tunnel 的任何现有条目**——
+#   · dsh.newapi.email → DSH Web GUI(:3080，CF Access 保护)   ← 保持
+#   · newapi.email     → New API 网关(192.168.0.131:3000)     ← 保持
+# 移动AI门户挂 **mai.newapi.email**，复用同一隧道：只新增一条 ingress + 一条全新 CNAME。
+# 不建第二隧道、不接管任何既有主机名；cloudflared 保持现有运行方式（nohup，非 launchd）。
+#
+# 前置：cloudflared 已安装 + `cloudflared tunnel login`（浏览器 OAuth，仅 CNAME 创建用）。
 # 效果：
 #   1) ~/.mobileai/control.env        — CF token + ADMIN_TOKEN（生成一次，chmod 600）
-#   2) CF 命名隧道 mai-control        — ingress: dsh.newapi.email → http://127.0.0.1:6420
-#   3) DNS CNAME dsh.newapi.email     → <tunnel>.cfargotunnel.com（只动这一条记录）
-#      ⚠ 接管：dsh.newapi.email 原 CNAME 指向既有 new-api-tunnel（→ DSH Web GUI :3080），
-#        本脚本删除该 CNAME 并改指 mai-control。切换后 DSH GUI 公网地址失效，
-#        手机访问 DSH 请改用 Tailscale / Termius SSH 端口转发（见 dsh-mobile-access）。
-#   4) cloudflared + server.mjs       — nohup 启动（若未运行）
-#   5) LaunchAgent ×3                 — control / mailer / cloudflared（重启自启）
-#   6) https://dsh.newapi.email/healthz 验证（DNS 传播最多 ~1min）
-# 幂等：重跑安全（已存在的隧道/env 字段不覆盖）。newapi.email 根域 = 既有 New API 网关，绝不动。
+#   2) ~/.cloudflared/config.yml      — 追加 ingress: mai.newapi.email → http://127.0.0.1:6420（先备份，幂等）
+#   3) DNS CNAME mai.newapi.email     → <既有隧道 id>.cfargotunnel.com（只新增这一条记录）
+#   4) cloudflared 重启加载配置 + :6420 mock → server.mjs（持久化 SQLite）
+#   5) LaunchAgent ×2                 — control / mailer（重启自启）
+#   6) https://mai.newapi.email/healthz 验证（DNS 传播最多 ~1min）
+# 幂等：重跑安全。newapi.email 根域与 dsh.newapi.email（含 CF Access）绝不动。
 set -uo pipefail
 
 DOMAIN=newapi.email
-PORTAL_HOST=dsh.newapi.email
-TUNNEL=mai-control
+PORTAL_HOST=mai.newapi.email
+TUNNEL_NAME=new-api-tunnel          # 既有隧道名（保持其运行方式，仅重启加载新配置）
 API_PORT=${MAI_API_PORT:-6420}
 CTL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 say()  { echo ""; echo "━━ $*"; }
 fail() { echo "✗ $*" >&2; exit 1; }
 
-# JSON 取值（node，路径如 result[0].id）
+# JSON 取值（node，路径如 .result[0].id）
 jget() { node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const v=eval("(JSON.parse(d)"+process.argv[1]+")");console.log(v==null?"":v)}catch{}})' "$2"; }
 
 say "0/6 前置检查"
@@ -32,13 +35,16 @@ command -v cloudflared >/dev/null || fail "cloudflared 未安装：brew install 
 command -v node >/dev/null || fail "node 未安装（需 ≥18）"
 NODE_BIN=$(command -v node)      # launchd 的 PATH 不含 /opt/homebrew/bin，plist 必须绝对路径
 CF_BIN=$(command -v cloudflared)
+[ -f "$HOME/.cloudflared/config.yml" ] || fail "未找到 ~/.cloudflared/config.yml（既有 new-api-tunnel 配置）"
 CF_JSON=$(ls "$HOME/.cloudflared/"*.json 2>/dev/null | head -1)
-[ -n "${CF_JSON:-}" ] && [ -f "$CF_JSON" ] || fail "未找到 ~/.cloudflared/*.json — 请先在终端运行：cloudflared tunnel login"
+[ -n "${CF_JSON:-}" ] && [ -f "$CF_JSON" ] || fail "未找到 ~/.cloudflared/*.json 凭据文件"
 CF_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('$CF_JSON','utf8')).api_token || ''")
-[ -n "$CF_TOKEN" ] || fail "$CF_JSON 里没有 api_token（cloudflared tunnel login 未完成？）"
-echo "✓ cloudflared + CF OAuth token（$CF_JSON）"
+[ -n "$CF_TOKEN" ] || fail "$CF_JSON 里没有 api_token — 请先在终端运行：cloudflared tunnel login"
+TUNNEL_ID=$(node -p "JSON.parse(require('fs').readFileSync('$CF_JSON','utf8')).TunnelID || ''")
+[ -n "$TUNNEL_ID" ] || fail "凭据文件读不到 TunnelID：$CF_JSON"
+echo "✓ cloudflared + CF OAuth token（$CF_JSON）· 既有隧道 $TUNNEL_ID"
 
-say "1/6 读取 Cloudflare 账号 id"
+say "1/6 读取 Cloudflare 账号 id（用户隧道创建用，写入 control.env）"
 ACCT=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/accounts" \
   -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].id')
 [ -n "$ACCT" ] || fail "取不到 CF account id（token 权限不足？重新 cloudflared tunnel login）"
@@ -68,55 +74,51 @@ else
   chmod 600 "$ENVF"; echo "✓ $ENVF 已存在，补齐缺失字段"
 fi
 
-say "3/6 CF 命名隧道 $TUNNEL（幂等）"
-TUNNEL_ID=$(cloudflared tunnel list --output json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log((j||[]).find(t=>t.Name==="'$TUNNEL'")?.ID||"")}catch{console.log("")}})')
-if [ -z "$TUNNEL_ID" ]; then
-  TUNNEL_ID=$(cloudflared tunnel create "$TUNNEL" | awk '{print $NF}')
-  [ -n "$TUNNEL_ID" ] || fail "创建隧道失败（cloudflared tunnel create 输出异常）"
-  echo "✓ 新建隧道 $TUNNEL_ID"
+say "3/6 既有隧道配置追加门户 ingress（先备份；幂等）"
+CFG="$HOME/.cloudflared/config.yml"
+if grep -q "hostname: $PORTAL_HOST\$" "$CFG"; then
+  echo "✓ ingress 已存在（$PORTAL_HOST → :$API_PORT），跳过"
 else
-  echo "✓ 复用已有隧道 $TUNNEL_ID"
+  cp "$CFG" "$CFG.bak.$(date +%s)"
+  awk -v h="$PORTAL_HOST" -v s="http://127.0.0.1:$API_PORT" '
+    !done && /^ *- service: http_status:/ { print "  - hostname: " h; print "    service: " s; done=1 }
+    { print }' "$CFG" > "$CFG.new"
+  grep -q "hostname: $PORTAL_HOST\$" "$CFG.new" \
+    || printf '  - hostname: %s\n    service: http://127.0.0.1:%s\n' "$PORTAL_HOST" "$API_PORT" >> "$CFG.new"
+  mv "$CFG.new" "$CFG"
+  echo "✓ 已追加 $PORTAL_HOST → 127.0.0.1:$API_PORT（备份：$CFG.bak.*；dsh/根域条目未动）"
 fi
 
-CFG="$HOME/.mobileai/cloudflared/$TUNNEL_ID.json"
-mkdir -p "$(dirname "$CFG")"
-cat > "$CFG" <<EOF
-{ "ingress": [ { "hostname": "$PORTAL_HOST", "service": "http://127.0.0.1:$API_PORT" }, { "service": "http_status:404" } ] }
-EOF
-echo "✓ 隧道配置 $CFG（$PORTAL_HOST → 127.0.0.1:$API_PORT）"
-
-say "4/6 DNS CNAME $PORTAL_HOST（只动这一条；根域 A 记录不碰）"
-echo "⚠ 接管提醒：$PORTAL_HOST 原指向 DSH Web GUI（localhost:3080）；切换后该地址成为移动AI门户。"
-echo "  DSH GUI 手机访问请改用 Tailscale / Termius SSH 端口转发，或另配子域。"
+say "4/6 DNS CNAME $PORTAL_HOST（只新增这一条；根域与 dsh 记录不碰）"
 ZONE_ID=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
   -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].id')
 [ -n "$ZONE_ID" ] || fail "zone $DOMAIN 不在该 CF 账号下（NS 未切到 Cloudflare？）"
-# 先删旧 CNAME（可能不存在），再经 cloudflared CLI 建新的
+# 先删同名的旧记录（可能不存在），再建新的 → <既有隧道 id>.cfargotunnel.com
 curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=CNAME&name=$PORTAL_HOST" \
   -H "Authorization: Bearer $CF_TOKEN" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",async()=>{try{const j=JSON.parse(d);for(const r of (j.result||[])){await fetch("https://api.cloudflare.com/client/v4/zones/dns_records/"+r.id,{method:"DELETE",headers:{Authorization:"Bearer "+process.argv[1]}});console.log("  - 删除旧记录 "+r.id)}}catch{}}' "$CF_TOKEN"
-cloudflared tunnel route dns "$TUNNEL_ID" "$PORTAL_HOST" >/dev/null 2>&1 && echo "✓ CNAME $PORTAL_HOST → $TUNNEL_ID.cfargotunnel.com" \
-  || echo "⚠ CNAME 命令返回非零（若记录已是目标值可忽略；稍后 healthz 验证会给出结论）"
+curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+  -H "Authorization: Bearer $CF_TOKEN" -X POST -d "{\"type\":\"CNAME\",\"name\":\"$PORTAL_HOST\",\"content\":\"$TUNNEL_ID.cfargotunnel.com\",\"ttl\":120}" \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.success?"  ✓ CNAME 已建":"  ✗ "+(j.errors||[])[0].message)}catch{console.log("  ? 响应异常")}})'
 
-say "5/6 启动服务（server.mjs + cloudflared；已在跑则跳过）"
+say "5/6 :6420 mock → server.mjs（持久化 SQLite）+ 重启 cloudflared 加载配置"
+HZ=$(curl -s --max-time 3 "http://127.0.0.1:$API_PORT/healthz" 2>/dev/null || true)
+case "$HZ" in *mock*) echo "· :$API_PORT 是 mock（内存态）→ 停掉，换持久化 server.mjs"; pkill -f "node .*mock-server\.mjs" || true; sleep 1;; esac
 SRV_PID=""
-if ! curl -sf --max-time 3 "http://127.0.0.1:$API_PORT/healthz" >/dev/null 2>&1; then
+if ! curl -sf --max-time 3 "http://127.0.0.1:$API_PORT/healthz" 2>/dev/null | grep -q '"ok":true'; then
   nohup "$NODE_BIN" "$CTL_DIR/server.mjs" >> /tmp/mai-control.log 2>&1 &
   SRV_PID=$!; echo $SRV_PID > /tmp/mai-mock.pid   # 兼容旧 pid 文件位置
   sleep 1; curl -sf --max-time 3 "http://127.0.0.1:$API_PORT/healthz" >/dev/null 2>&1 \
     && echo "✓ server.mjs :$API_PORT (pid $SRV_PID)" || fail "server.mjs 启动失败，看 /tmp/mai-control.log"
 else
-  echo "✓ server.mjs :$API_PORT 已在运行（launchd 接管时不会杀它，若端口冲突请手动 pkill -f server.mjs）"
+  echo "✓ server.mjs :$API_PORT 已在运行（若为旧实例请手动 pkill -f server.mjs）"
 fi
-CF_PID=""
-if ! pgrep -f "cloudflared.*run $TUNNEL_ID" >/dev/null 2>&1; then
-  nohup "$CF_BIN" tunnel --no-autoupdate run "$TUNNEL_ID" >> /tmp/mai-cloudflared.log 2>&1 &
-  CF_PID=$!; echo $CF_PID > /tmp/mai-cf.pid
-  echo "✓ cloudflared（$TUNNEL_ID）已启动 (pid $CF_PID) → /tmp/mai-cloudflared.log"
-else
-  echo "✓ cloudflared（$TUNNEL_ID）已在运行（launchd 接管时若端口冲突请手动 pkill -f cloudflared）"
-fi
+echo "· 重启 cloudflared（$TUNNEL_NAME，秒级中断；CF Access 会话在 Cloudflare 侧不受影响）"
+pkill -f "cloudflared tunnel run $TUNNEL_NAME" 2>/dev/null || true
+sleep 2
+nohup "$CF_BIN" tunnel run "$TUNNEL_NAME" >> /tmp/mai-cloudflared.log 2>&1 &
+echo "✓ cloudflared（$TUNNEL_NAME）已重启 (pid $!) → /tmp/mai-cloudflared.log"
 
-say "6/6 安装 LaunchAgent（重启自启；bootstrap 成功后接管 nohup 实例）"
+say "6/6 安装 LaunchAgent（control + mailer；cloudflared 保持现有运行方式）"
 LA="$HOME/Library/LaunchAgents"; mkdir -p "$LA"
 mk_agent() { # $1=label 其余为 argv（元素内不可含双引号）；返回 0 = bootstrap 成功
   local label="$1"; shift
@@ -150,10 +152,6 @@ EOF2
 else
   echo "· mailer LaunchAgent 跳过（未配置 MAIL_ACCOUNTS；配好后重跑本脚本即可）"
 fi
-if mk_agent com.mobileai.cloudflared "$CF_BIN" tunnel --no-autoupdate run "$TUNNEL_ID"; then
-  echo "✓ com.mobileai.cloudflared（重启自启）"
-  [ -n "$CF_PID" ] && kill "$CF_PID" >/dev/null 2>&1 && echo "  · nohup 实例已交还给 launchd"
-fi
 
 say "验证 https://$PORTAL_HOST（DNS 传播最多 ~1min）"
 for i in $(seq 1 30); do
@@ -167,6 +165,7 @@ echo ""
 echo "════ 部署完成 ════"
 echo "门户（手机可开）: https://$PORTAL_HOST/"
 echo "管理台          : https://$PORTAL_HOST/admin   （令牌见 $ENVF 的 ADMIN_TOKEN）"
+echo "DSH GUI         : https://dsh.newapi.email/（保持原样，CF Access 保护）"
 echo "日志            : /tmp/mai-control.log · /tmp/mai-cloudflared.log"
 echo "下一步          : 配置真实发信 → 在 $ENVF 加 MAIL_ACCOUNTS=\"邮箱:密码\"，然后重跑本脚本装 mailer"
 echo "                  （Outlook/Hotmail 用账号密码，开两步验证则用应用专用密码；QQ/163 用「授权码」不是登录密码）"

@@ -199,3 +199,24 @@ new dsh/
     （建 mai-control 隧道 + CNAME 接管 + nohup server.mjs → LaunchAgent×3）→
     control.env 追加 MAIL_ACCOUNTS="ricky8848@outlook.com:密码" → 重跑脚本装 mailer agent
     → https://dsh.newapi.email/healthz 验证 + /admin 发测试邮件验真实收件。
+- **2026-09-04（续）** 用户定案修订：**dsh.newapi.email 保持现状不动** + 邮件问题定位：
+  - **⚠ 推翻上一条的 CNAME 接管方案**（用户：「不要更换目前这个设置保持，后面的开发直接切换到
+    这个上」）。现状核实：dsh.newapi.email → localhost:3080（DSH GUI）且**前面有 CF Access
+    （Zero Trust，org jutixinxi）登录墙**；newapi.email 根域 → New API 网关正常。
+    **两者全部保持**；门户回退为 **mai.newapi.email**（代码 8 文件 dsh→mai 全量回退，
+    commit b57f1be 的域名变更被撤销）。
+  - **deploy-local.sh 重写为「现有隧道模式」**：不建 mai-control 第二隧道——
+    ① ~/.cloudflared/config.yml 追加一条 ingress（mai.newapi.email → 127.0.0.1:6420，
+    awk 插入到 404 fallback 前，先备份 .bak.<ts>，幂等；dry-run 验证过）
+    ② CNAME mai.newapi.email → <既有隧道 id>.cfargotunnel.com（全新记录，不碰 dsh/根域）
+    ③ :6420 mock(内存态) → server.mjs(SQLite 持久化)
+    ④ cloudflared `tunnel run new-api-tunnel` kill+nohup 重启加载配置（秒级中断；
+    CF Access 会话在 Cloudflare 侧不受影响）——保持现有运行方式，**不加 cloudflared
+    LaunchAgent**（用户定案不动现状）；LaunchAgent 仅 control + mailer。
+    bash -n ✓、awk dry-run ✓、smoke 16/16。
+  - **邮件「没收到」根因**（用户测试 xunricky@gmail.com）：mailer 进程在 **MOCK 模式**
+    （本地预览设计，不真发只打印）——申请→入队→mailer 领取全链路正常（邮件已生成，
+    magic link 在 /tmp/mai-mailer.log），**从未配置真实 SMTP**。本机 Keychain 无
+    outlook/office365 凭据 → 真实发送必须用户提供 ricky8848@outlook.com 密码
+    （两步验证则应用专用密码）。另注意：mock 的 magic link 指向 http://127.0.0.1:6420
+    （仅本机可开）；公网可用链接需 mai.newapi.email DNS 生效（CF login → CNAME）。
