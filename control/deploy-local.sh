@@ -140,6 +140,8 @@ if mk_agent com.mobileai.control "$NODE_BIN" "$CTL_DIR/server.mjs"; then
   echo "✓ com.mobileai.control（重启自启）"
   [ -n "$SRV_PID" ] && kill "$SRV_PID" >/dev/null 2>&1 && echo "  · nohup 实例已交还给 launchd"
 fi
+# 先清掉手动启动的 mailer（nohup/前台），避免与 launchd 实例双轮询同一队列 → 重复发信
+pkill -f "node .*mailer\.mjs" 2>/dev/null || true; sleep 1
 if grep -qs '^MAIL_ACCOUNTS=' "$HOME/.mobileai/control.env" 2>/dev/null; then
   # mailer 需要 control.env 里的 MAIL_ACCOUNTS/ADMIN_TOKEN → 包装脚本 source 后 exec
   cat > "$HOME/.mobileai/run-mailer.sh" <<EOF2

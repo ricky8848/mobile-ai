@@ -220,3 +220,21 @@ new dsh/
     outlook/office365 凭据 → 真实发送必须用户提供 ricky8848@outlook.com 密码
     （两步验证则应用专用密码）。另注意：mock 的 magic link 指向 http://127.0.0.1:6420
     （仅本机可开）；公网可用链接需 mai.newapi.email DNS 生效（CF login → CNAME）。
+- **2026-09-04（续2）** 发件链路打通：Outlook 路径关闭，定案 xunricky@gmail.com（Gmail）：
+  - **Outlook SMTP 密码路径正式关闭**：ricky8848@outlook.com 累计 13+ 次尝试（账号密码
+    + 4 组应用专用码 × smtp.office365.com/smtp-mail.outlook.com），全部 `535 5.7.139
+    basic authentication is disabled`——微软服务端对该账号禁用 Basic Auth（策略层拒绝，
+    未走到凭据校验；台北/新加坡/印度节点一致），账号侧无开关。唯一例外：一次瞬态
+    `5.7.3`（策略传播中节点），未复现。→ 该邮箱只可走 OAuth2（备选 B，未采用）。
+  - **发件箱定案 xunricky@gmail.com**（用户生成 Gmail 应用专用密码）：smtp.gmail.com:465
+    验证通过（直发测试邮件 OK）。nodemailer@9.1.1 补装为 dependency
+    （~/.npm 权限损坏 → npm --cache $PWD/.npm-cache）。
+  - **真实 mailer 已上线**（nohup，pid /tmp/mai-mailer.pid；env MAIL_ACCOUNTS=
+    xunricky@gmail.com:<应用专用密码，仅存于会话上下文与部署时的 control.env 追加——
+    **密码不入仓库**）；MOCK mailer 已停。端到端验证 ✓：门户 apply xunricky@gmail.com
+    → ~5s 真实发出（em_cb7n4tw9rjj2；此前测试邮件两封）。
+  - **mock 控制面已带 PORTAL_BASE=https://mai.newapi.email 重启**（:6420，内存态）——
+    邮件内 magic link 已是公网地址（DNS 生效后可点开）。
+  - **deploy-local.sh**：装 mailer LaunchAgent 前先 pkill 手动 mailer（防双轮询重复发信）。
+    ⚠ 部署时 control.env 需追加 `MAIL_ACCOUNTS="xunricky@gmail.com:<密码>"`（由本会话
+    代跑时写入，脚本本身不含该值）。
