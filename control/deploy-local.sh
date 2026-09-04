@@ -4,16 +4,19 @@
 # 前置：cloudflared 已安装 + 终端跑过一次 `cloudflared tunnel login`（浏览器 OAuth）。
 # 效果：
 #   1) ~/.mobileai/control.env        — CF token + ADMIN_TOKEN（生成一次，chmod 600）
-#   2) CF 命名隧道 mai-control        — ingress: mai.newapi.email → http://127.0.0.1:6420
-#   3) DNS CNAME mai.newapi.email     → <tunnel>.cfargotunnel.com（只动这一条记录）
+#   2) CF 命名隧道 mai-control        — ingress: dsh.newapi.email → http://127.0.0.1:6420
+#   3) DNS CNAME dsh.newapi.email     → <tunnel>.cfargotunnel.com（只动这一条记录）
+#      ⚠ 接管：dsh.newapi.email 原 CNAME 指向既有 new-api-tunnel（→ DSH Web GUI :3080），
+#        本脚本删除该 CNAME 并改指 mai-control。切换后 DSH GUI 公网地址失效，
+#        手机访问 DSH 请改用 Tailscale / Termius SSH 端口转发（见 dsh-mobile-access）。
 #   4) cloudflared + server.mjs       — nohup 启动（若未运行）
 #   5) LaunchAgent ×3                 — control / mailer / cloudflared（重启自启）
-#   6) https://mai.newapi.email/healthz 验证（DNS 传播最多 ~1min）
+#   6) https://dsh.newapi.email/healthz 验证（DNS 传播最多 ~1min）
 # 幂等：重跑安全（已存在的隧道/env 字段不覆盖）。newapi.email 根域 = 既有 New API 网关，绝不动。
 set -uo pipefail
 
 DOMAIN=newapi.email
-PORTAL_HOST=mai.newapi.email
+PORTAL_HOST=dsh.newapi.email
 TUNNEL=mai-control
 API_PORT=${MAI_API_PORT:-6420}
 CTL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -83,6 +86,8 @@ EOF
 echo "✓ 隧道配置 $CFG（$PORTAL_HOST → 127.0.0.1:$API_PORT）"
 
 say "4/6 DNS CNAME $PORTAL_HOST（只动这一条；根域 A 记录不碰）"
+echo "⚠ 接管提醒：$PORTAL_HOST 原指向 DSH Web GUI（localhost:3080）；切换后该地址成为移动AI门户。"
+echo "  DSH GUI 手机访问请改用 Tailscale / Termius SSH 端口转发，或另配子域。"
 ZONE_ID=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
   -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].id')
 [ -n "$ZONE_ID" ] || fail "zone $DOMAIN 不在该 CF 账号下（NS 未切到 Cloudflare？）"
@@ -163,5 +168,5 @@ echo "════ 部署完成 ════"
 echo "门户（手机可开）: https://$PORTAL_HOST/"
 echo "管理台          : https://$PORTAL_HOST/admin   （令牌见 $ENVF 的 ADMIN_TOKEN）"
 echo "日志            : /tmp/mai-control.log · /tmp/mai-cloudflared.log"
-echo "下一步          : 配置真实发信 → 在 $ENVF 加 MAIL_ACCOUNTS=\"邮箱:授权码\"，然后重跑本脚本装 mailer"
-echo "                  （QQ/163 用「授权码」不是登录密码；Gmail 用应用专用密码）"
+echo "下一步          : 配置真实发信 → 在 $ENVF 加 MAIL_ACCOUNTS=\"邮箱:密码\"，然后重跑本脚本装 mailer"
+echo "                  （Outlook/Hotmail 用账号密码，开两步验证则用应用专用密码；QQ/163 用「授权码」不是登录密码）"

@@ -3,7 +3,7 @@
 //
 // 与 CF Workers（src/index.js）跑**同一份 Worker 代码**：Node 24 + 内置 SQLite
 // （node:sqlite，D1 兼容垫片），零路由重复。数据持久化到 SQLite（schema.sql）。
-// cloudflared 命名隧道把 mai.newapi.email → http://127.0.0.1:6420 暴露到公网。
+// cloudflared 命名隧道把 dsh.newapi.email → http://127.0.0.1:6420 暴露到公网。
 //
 //   node server.mjs        # http://127.0.0.1:6420
 //   MAI_DB=/path/db PORT=xxxx node server.mjs
@@ -13,7 +13,7 @@
 //   MAI_HOME        数据目录（env 文件位置；缺省 ~/.mobileai）
 //   MAI_DB          SQLite 文件路径（缺省 ~/.mobileai/control.db）
 //   DOMAIN          newapi.email（用户隧道子域根；勿改，除非换域名）
-//   PORTAL_BASE     门户公网地址（缺省 https://mai.newapi.email；magic link / Stripe 回跳用）
+//   PORTAL_BASE     门户公网地址（缺省 https://dsh.newapi.email；magic link / Stripe 回跳用）
 //   ADMIN_TOKEN     管理端令牌（缺省 dev-admin-token → 启动时告警，生产必须替换）
 //   CF_API_TOKEN / CF_ACCOUNT_ID   用户隧道创建用（cf.js；未配时 activate 会报错）
 //   PAYMENT_* / STRIPE_*           见 wrangler.jsonc vars/secrets 注释
@@ -51,7 +51,7 @@ const fileEnv = parseEnvFile(ENV_FILE);
 const env = { ...fileEnv, ...process.env };
 env.DB_PATH = process.env.MAI_DB || fileEnv.MAI_DB || path.join(HOME_DIR, 'control.db');
 env.DOMAIN = process.env.DOMAIN || fileEnv.DOMAIN || 'newapi.email';
-env.PORTAL_BASE = process.env.PORTAL_BASE || fileEnv.PORTAL_BASE || 'https://mai.newapi.email';
+env.PORTAL_BASE = process.env.PORTAL_BASE || fileEnv.PORTAL_BASE || 'https://dsh.newapi.email';
 const PORT = Number(process.env.PORT || fileEnv.PORT) || 6420;
 
 /* ---------------- SQLite（D1 兼容垫片：prepare().bind() → first/all/run）---------------- */

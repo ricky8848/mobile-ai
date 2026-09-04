@@ -4,7 +4,7 @@
 // nodemailer 多邮箱轮转发出（确认链接/认证码/订单邮件），回报 /admin/email-result。
 //
 // env：
-//   MOBILEAI_API    控制面地址（默认 http://127.0.0.1:6420；生产 https://newapi.email）
+//   MOBILEAI_API    控制面地址（默认 http://127.0.0.1:6420；mailer 与控制面同机常驻）
 //   ADMIN_TOKEN     管理端 Bearer（默认 dev-admin-token）
 //   MAIL_ACCOUNTS   "user1:pass1,user2:pass2"（多邮箱轮转；QQ/网易需授权码）
 //   MAIL_FROM_NAME  发件人显示名（默认「移动AI」）

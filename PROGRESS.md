@@ -177,3 +177,25 @@ new dsh/
     机器码单终端绑定 + 轮换/吊销）；Stripe 未注册（在线支付按钮隐藏，QR 备用渠道占位待真实收款码）；
     控制面与数据面同机 = 家中 Mac（免费先，机器需常驻）。
     （二维码真实 URL/金额、CF 凭据等旧手动项不变。）
+- **2026-09-04** 域名定案 dsh.newapi.email + 发件箱 ricky8848@outlook.com（部署待用户两键）：
+  - **域名切换**（用户定案「最终上线使用 dsh.newapi.email」，测试=生产同域避免二次切换）：
+    全量 mai.newapi.email → dsh.newapi.email（server.mjs PORTAL_BASE 缺省、deploy-local.sh
+    PORTAL_HOST、client/i.sh+guide.md+mobileai.mjs apiBase 缺省，control/static/ 同步；
+    PROGRESS.md 历史记录保留原样）。smoke/e2e 不受影响（走 127.0.0.1，域名仅缺省值）。
+  - **⚠ dsh.newapi.email 接管**：该 CNAME 现指向既有 new-api-tunnel（93101028-…，
+    ingress dsh.newapi.email → localhost:3080 = DSH Web GUI 手机入口）。deploy-local.sh
+    第4步会删除该 CNAME 改指 mai-control → **切换后 DSH GUI 公网地址失效**；手机访问
+    DSH 改用 Tailscale / Termius SSH 端口转发（dsh-mobile-access）。根域 New API 网关
+    （192.168.0.131:3000）与 new-api-tunnel 本体仍不动。
+  - **发件箱**：ricky8848@outlook.com（用户改定，替代 xunricky@gmail.com；mailer smtpFor
+    已支持 outlook → office365:587）。「申请→立即发送」无需改码：/site/apply 入队 queued，
+    mailer.mjs 5s 轮询 /admin/email-queue 发出（≤5s）。
+  - **支付**：用户明确「目前只是测试版，还需完善支付功能」——P7 Stripe 代码已就绪
+    （Checkout+webhook），待注册/配 key（见 P7 手动项）；本轮不展开。
+  - **待用户两键**：① `cloudflared tunnel login`（cert.pem 已移走 → ~/cert.pem.mobileai-backup，
+    旧式凭据 JSON 保留供 new-api-tunnel 重启；新 OAuth token 存 ~/.cloudflared/*.json）
+    ② ricky8848@outlook.com 密码（两步验证则应用专用密码）。
+  - **部署序列**（两键齐后我代跑）：pkill mock(:6420)+mailer MOCK → deploy-local.sh
+    （建 mai-control 隧道 + CNAME 接管 + nohup server.mjs → LaunchAgent×3）→
+    control.env 追加 MAIL_ACCOUNTS="ricky8848@outlook.com:密码" → 重跑脚本装 mailer agent
+    → https://dsh.newapi.email/healthz 验证 + /admin 发测试邮件验真实收件。
