@@ -123,7 +123,7 @@ export function loginErrorPage(msg, portalBase = '') {
 }
 
 /* ---------------- 我的页面：认证码 + 绑定状态 ---------------- */
-export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}) {
+export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}, dshGuiUrl = '') {
   const b = p.binding;
   const bp = basePathOf(portalBase); // 子路径挂载（/mai）时内部跳转带前缀
   const bindCard = b ? `
@@ -150,6 +150,11 @@ ${flags.justPaid ? '<div class="card" style="border-color:rgba(52,199,89,.45)"><
 <div class="kv"><span>状态</span><span>${p.status === 'active' ? '<span class="badge ok">已激活</span>' : p.status === 'suspended' ? '<span class="badge err">已停用</span>' : '<span class="badge warn">待付款确认</span>'}</span></div>
 ${p.status === 'pending' ? paymentCard(pay, bp) : ''}
 </div>
+${dshGuiUrl ? `<div class="card">
+<label>手机使用全部工具</label>
+<p style="font-size:14px;color:var(--muted);margin:8px 0">DSH Web GUI = 家中电脑的全部工具（DeepSeek Harness / Codex / OpenClaw 等），手机浏览器直接操作：</p>
+<div class="row"><a href="${esc(dshGuiUrl)}" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:9px 0;border-radius:10px;background:#1d1d1f;color:#fff;text-decoration:none;font-size:14px">打开 DSH 控制台 →</a></div>
+</div>` : ''}
 ${p.code ? `<div class="card">
 <label>认证码（一次性，填入本地控制台）</label>
 <div class="big-code mono">${esc(p.code.code)}</div>
@@ -263,7 +268,11 @@ export function adminDashboard(portalBase) {
 <tbody id="b-body"><tr><td colspan=7 style="color:var(--muted)">加载中…</td></tr></tbody></table>
 </div>
 <div class="card">
-<label>邮件队列 <span id="e-count" style="font-weight:400;font-size:12px"></span></label>
+<label style="display:flex;justify-content:space-between;align-items:center">邮件队列 <span id="e-count" style="font-weight:400;font-size:12px"></span>
+<select id="e-limit" onchange="loadEmails()" style="font-size:12px;padding:3px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.25);background:#fff;color:#1d1d1f">
+<option value="20" selected>每页 20</option><option value="50">每页 50</option>
+<option value="100">每页 100</option><option value="200">每页 200</option></select>
+</label>
 <table><thead><tr><th>收件人</th><th>主题</th><th>状态</th><th>创建时间</th><th style="width:70px">操作</th></tr></thead>
 <tbody id="e-body"><tr><td colspan=5 style="color:var(--muted)">加载中…</td></tr></tbody></table>
 <p style="font-size:12px;color:var(--muted);margin-top:8px">队列由 mailer.mjs（家中机器常驻）轮询发出；MOCK 模式打印到 /tmp/mai-mailer.log。点「查看」看正文（magic link / 认证码）。<b>「失败」是中间状态：每 5 分钟自动重试直到发出（如 SMTP/网络抖动），无需手动处理。</b></p>
@@ -322,7 +331,8 @@ async function loadBindings(){const{ok,d}=await j('/admin/bindings');if(!ok){doc
  +'<td class="mono">'+esc(b.service_addr||'—')+'</td><td>'+badge(b.status)+'</td><td>'+tsFmt(b.last_heartbeat)+'</td>'
  +'<td>'+(b.status==='active'||b.status==='grace'?'<button class="mini ghost" data-act="revoke" data-id="'+esc(b.id)+'">吊销</button>':'')+'</td></tr>').join('')
  ||'<tr><td colspan=7 style="color:var(--muted)">暂无绑定</td></tr>'}
-async function loadEmails(){const{ok,d}=await j('/admin/emails?limit=20');if(!ok)return;
+async function loadEmails(){const lim=(document.getElementById('e-limit')||{}).value||'20';
+ const{ok,d}=await j('/admin/emails?limit='+lim);if(!ok)return;
  document.getElementById('e-count').textContent='（排队中 '+(d.queued||[]).length+' 封）';
  for(const e of [...(d.recent||[]),...(d.queued||[])]) if(e&&e.id) mailCache[e.id]=e;
  document.getElementById('e-body').innerHTML=((d.recent)||[]).map(e=>'<tr><td class="mono">'+esc(e.to_email)+'</td>'

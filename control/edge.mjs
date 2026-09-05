@@ -23,10 +23,11 @@ const DSH_HOST = '127.0.0.1', DSH_PORT = Number(process.env.DSH_GUI_PORT) || 308
 const PREFIX = '/mai';
 
 function target(reqUrl) {
+  const search = reqUrl.search || ''; // ⚠ query string 必须保留（magic link ?token=、admin API ?limit=）
   if (reqUrl.pathname === PREFIX || reqUrl.pathname.startsWith(PREFIX + '/')) {
-    return { host: MAI_HOST, port: MAI_PORT, path: reqUrl.pathname.slice(PREFIX.length) || '/' + (reqUrl.search || '') };
+    return { host: MAI_HOST, port: MAI_PORT, path: (reqUrl.pathname.slice(PREFIX.length) || '/') + search };
   }
-  return { host: DSH_HOST, port: DSH_PORT, path: reqUrl.pathname + (reqUrl.search || '') };
+  return { host: DSH_HOST, port: DSH_PORT, path: reqUrl.pathname + search };
 }
 
 // 逐跳头（hop-by-hop）不透传；Node http 客户端已解 chunked，响应 pipe 时自动重编码

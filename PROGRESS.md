@@ -367,3 +367,24 @@ new dsh/
     （先过一次 CF Access）→ ② /mai 门户 + magic link → ③ /mai/admin 管理台
     （ADMIN_TOKEN）→ ④ 主域名恢复确认（New API 网关页）→ ⑤ 装客户端（可选，
     curl https://dsh.newapi.email/mai/i.sh | bash）→ ⑥ healthz。
+- **2026-09-05（续4 · magic link 修复 + 管理台增强）**：
+  - **「链接不可用」根因（edge.mjs 生产 bug，已修复）**：用户点 magic link（22:04 邮件
+    em_57ae…，token 4cdce…）报「链接不可用」。全链路复现（/site/apply → 真实 Gmail 发出 →
+    GET /mai/login?token=… 经 edge）暴露：**edge.mjs target() 丢 query string**——
+    `path: slice(PREFIX.length) || '/' + search` 运算符优先级问题：任何 /mai/<x> 路径
+    slice 结果非空 → `||` 短路 → **search 被整体丢弃**（原意只是给 /mai 裸路径兜底）→
+    :6420 收到无 token 的 /login → consumeMagicLink('') 失败。此前漏检原因：smoke/e2e
+    不过 edge（直连 :6421/:6431）；「坏 token」验证在丢 query 时同样出错误页，无法区分。
+    **修复**：target() 显式 `path = (slice || '/') + search`（影响所有 /mai/* query：
+    magic link ?token=、admin API ?limit= 等）。**验证 ✓**：重启后点击模拟 →
+    302 /mai/me + set-cookie mai_session + token 消费落库；admin ?limit=3 → 恰 3 条、
+    ?limit=50 → 18 条。**用户原 22:04 邮件链接（token 仍 pending）现在直接可点**；
+    若过期/已用 → 门户重新申请即得新邮件。
+  - **管理台邮件队列分页**（用户要求）：后端 /admin/emails?limit= 本已支持 →
+    前端邮件队列卡加「每页 20（默认）/50/100/200」select，loadEmails 动态取
+    （site.js）；后端 limit 上限加固 500（index.js）。线上验证 ✓。
+  - **/me「手机使用全部工具」入口**（用户预期：手机上不止 DSH，还要用 Codex /
+    OpenClaw 等全部工具）：mePage 新增卡片 →「打开 DSH 控制台」（href =
+    https://dsh.newapi.email/，与门户同一 CF Access 会话；env.DSH_GUI_URL 可覆盖，
+    子路径挂载缺省 = 同域根）。线上验证 ✓（卡片 + href 渲染正确）。
+  - **回归**：改动后复跑 smoke **16/16 PASS** + e2e-p7 **31 PASS / 0 FAIL**。

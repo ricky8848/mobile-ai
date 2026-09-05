@@ -160,8 +160,11 @@ export default {
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
       if (!u) return new Response(null, { status: 302, headers: { location: bp + '/' } });
+      // DSH GUI（全部工具入口）：env.DSH_GUI_URL 优先；子路径挂载时缺省 = 同域根（dsh.newapi.email/）
+      let dshGuiUrl = env.DSH_GUI_URL || '';
+      if (!dshGuiUrl && bp) { try { dshGuiUrl = new URL(portalBase).origin + '/'; } catch {} }
       return html(mePage(await mePayload(db, u), portalBase, env.DOMAIN, paymentInfoFromEnv(env),
-        { justPaid: url.searchParams.get('paid') === '1' })); // P7：Stripe success_url 回跳
+        { justPaid: url.searchParams.get('paid') === '1' }, dshGuiUrl)); // P7：Stripe success_url 回跳
     }
     if (req.method === 'POST' && url.pathname === '/site/pay/checkout') { // P7：创建 Stripe Checkout（需门户会话）
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
@@ -209,8 +212,10 @@ export default {
         return out(r); }
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(await db2.listUsers());
       if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(await adminBindings(db2, { status: url.searchParams.get('status') }));
-      if (req.method === 'GET' && url.pathname === '/admin/emails') return json({ queued: await db2.listEmails('queued', 10),
-        recent: await db2.listEmails(null, Number(url.searchParams.get('limit')) || 20) });
+      if (req.method === 'GET' && url.pathname === '/admin/emails') { // 列表分页：默认 20，前端可选 50/100/200（上限 500）
+        const lim = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 20));
+        return json({ queued: await db2.listEmails('queued', 10), recent: await db2.listEmails(null, lim) });
+      }
       if (req.method === 'GET' && url.pathname === '/admin/stats') { // P7：实时总览（前端 10s 轮询）
         const onlineMs = Number(env.ONLINE_WINDOW_MS) > 0 ? Number(env.ONLINE_WINDOW_MS) : ONLINE_WINDOW_MS;
         const s = await adminStats(db2, ts, onlineMs);
