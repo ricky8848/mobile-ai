@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # mobile ai — 本地生产部署（免费先）· deploy-local.sh 【现有隧道模式】
+# ⚠️【已废弃 2026-09-05 修订】门户已改挂 dsh.newapi.email/mai（edge.mjs + com.mobileai.edge，
+#    apex newapi.email 已恢复给 New API 网关）。本脚本的 ingress 步会把 apex 指回 :6420，
+#    **破坏已恢复的网关**——默认拒绝执行；强制运行需 MAI_FORCE_DEPLOY=1（不推荐）。
 #
 # 设计定案（2026-09-05）：门户 = **newapi.email**（apex，Zero Trust 公共主机名——
 # CF 为其自动注入 A 记录；CNAME → <uuid>.cfargotunnel.com 无 A 记录不可用，勿建）。
@@ -19,6 +22,14 @@
 #   6) https://newapi.email/healthz 验证（DNS 传播最多 ~1min）
 # 幂等：重跑安全。dsh.newapi.email（含 CF Access）绝不动。
 set -uo pipefail
+
+# 废弃守卫：见文件头说明（apex 已还给 New API 网关，本脚本 ingress 步会破坏它）。
+if [ "${MAI_FORCE_DEPLOY:-0}" != "1" ]; then
+  echo "✗ deploy-local.sh 已废弃（2026-09-05 修订）：门户 = dsh.newapi.email/mai（edge.mjs + com.mobileai.edge）。" >&2
+  echo "  本脚本 ingress 步会把 apex（newapi.email）指回 :6420，破坏已恢复的 New API 网关。" >&2
+  echo "  如确需运行：MAI_FORCE_DEPLOY=1 bash $0" >&2
+  exit 1
+fi
 
 DOMAIN=newapi.email
 PORTAL_HOST=$DOMAIN   # 门户 = apex（2026-09-05 定案）

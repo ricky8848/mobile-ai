@@ -5,6 +5,12 @@ export function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// 门户子路径挂载的 base path（2026-09-05：dsh.newapi.email/mai 前缀）——
+// PORTAL_BASE=https://dsh.newapi.email/mai → "/mai"；根部署（无子路径）→ ""。
+export function basePathOf(portalBase) {
+  try { return new URL(String(portalBase || '')).pathname.replace(/\/+$/, ''); } catch { return ''; }
+}
+
 const CSS = `
 :root{--bg:#fff;--fg:#1d1d1f;--muted:#86868b;--border:rgba(0,0,0,.1);--btn:#1d1d1f;--btn-fg:#fff;
   --ok:#34c759;--warn:#ff9f0a;--err:#ff3b30}
@@ -67,7 +73,8 @@ function page(title, body) {
 }
 
 /* ---------------- 落地页：申请入口 ---------------- */
-export function landingPage() {
+export function landingPage(portalBase = '') {
+  const BP = JSON.stringify(basePathOf(portalBase));
   return page('移动AI — 零成本隧道即服务', `
 <div class="mark">mobile ai</div>
 <h1>人在路上任意飘，<br>家里电脑爆缸开工。</h1>
@@ -89,11 +96,12 @@ export function landingPage() {
 </div>
 <footer>移动AI · newapi.email · 流量不经第三方服务器</footer>` + `
 <script>
+const BP=${BP}; // 门户 base path（子路径挂载；根部署为 ""）
 document.getElementById('go').onclick = async () => {
   const em = document.getElementById('em'), m = document.getElementById('m');
   if (!/^[^@\\s]+@[^@\\s]+$/.test(em.value.trim())) { m.textContent = '请填写有效邮箱'; m.className = 'msg err'; return; }
   document.getElementById('go').disabled = true; m.textContent = '发送中…'; m.className = 'msg';
-  try { const r = await fetch('/site/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: em.value.trim() }) });
+  try { const r = await fetch(BP + '/site/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: em.value.trim() }) });
     const d = await r.json(); m.textContent = (r.ok && d.ok) ? '确认链接已发送至邮箱，请查收。' : ('失败：' + (d.error || r.status));
     m.className = 'msg ' + ((r.ok && d.ok) ? 'ok' : 'err');
   } catch (e) { m.textContent = '网络错误'; m.className = 'msg err'; }
@@ -103,19 +111,21 @@ document.getElementById('go').onclick = async () => {
 }
 
 /* ---------------- magic link 落地（无效/过期） ---------------- */
-export function loginErrorPage(msg) {
+export function loginErrorPage(msg, portalBase = '') {
+  const bp = basePathOf(portalBase);
   return page('登录 · 移动AI', `
 <div class="mark">mobile ai</div>
 <h1 style="font-size:24px;margin-top:16px">链接不可用</h1>
 <p class="sub">${esc(msg || '确认链接无效或已过期（7 天有效，一次性）。')}</p>
 <div class="card"><div class="row">
-<button onclick="location.href='/'" style="flex:1">回到首页重新申请</button>
+<button onclick="location.href='${bp}/'" style="flex:1">回到首页重新申请</button>
 </div></div>`);
 }
 
 /* ---------------- 我的页面：认证码 + 绑定状态 ---------------- */
 export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}) {
   const b = p.binding;
+  const bp = basePathOf(portalBase); // 子路径挂载（/mai）时内部跳转带前缀
   const bindCard = b ? `
 <div class="card">
 <label>当前绑定</label>
@@ -132,13 +142,13 @@ export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}) 
 </div>`;
   return page('我的页面 · 移动AI', `
 <div class="top"><span class="mark">mobile ai</span>
-<button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('/site/logout',{method:'POST'}).then(()=>location.href='/')">退出</button></div>
+<button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('${bp}/site/logout',{method:'POST'}).then(()=>location.href='${bp}/')">退出</button></div>
 ${flags.justPaid ? '<div class="card" style="border-color:rgba(52,199,89,.45)"><b style="color:var(--ok)">支付成功 ✓</b><p style="font-size:13px;color:var(--muted);margin:6px 0 0">认证码已发放（见下方）并同步至邮箱。若尚未显示，请 10 秒后刷新。</p></div>' : ''}
 <div class="card">
 <label>账号</label>
 <div class="kv"><span>邮箱</span><span>${esc(p.email)}</span></div>
 <div class="kv"><span>状态</span><span>${p.status === 'active' ? '<span class="badge ok">已激活</span>' : p.status === 'suspended' ? '<span class="badge err">已停用</span>' : '<span class="badge warn">待付款确认</span>'}</span></div>
-${p.status === 'pending' ? paymentCard(pay) : ''}
+${p.status === 'pending' ? paymentCard(pay, bp) : ''}
 </div>
 ${p.code ? `<div class="card">
 <label>认证码（一次性，填入本地控制台）</label>
@@ -162,7 +172,7 @@ function fmtMoney(cents, cur) {
   return sym + (c / 100).toFixed(2);
 }
 
-export function paymentCard(pay) {
+export function paymentCard(pay, bp = '') {
   const p = pay || {};
   const methods = (p.methods && p.methods.length ? p.methods : [ { name: '支付宝' }, { name: '微信支付' } ]);
   const qrs = methods.map((m) => `
@@ -195,7 +205,7 @@ export function paymentCard(pay) {
 <script>document.getElementById('pay-online').onclick = async () => {
   const m = document.getElementById('pay-m'), b = document.getElementById('pay-online');
   b.disabled = true; m.textContent = '正在创建安全支付链接…'; m.className = 'msg';
-  try { const r = await fetch('/site/pay/checkout', { method: 'POST' });
+  try { const r = await fetch('${bp}/site/pay/checkout', { method: 'POST' });
     const d = await r.json().catch(() => ({}));
     if (r.ok && d.url) { location.href = d.url; return; }
     m.textContent = '创建支付失败：' + (d.error || r.status); m.className = 'msg err'; b.disabled = false;
@@ -204,7 +214,8 @@ export function paymentCard(pay) {
 }
 
 /* ---------------- P6：管理端（/admin）—— token 登录 + 控制台 ---------------- */
-export function adminLoginPage() {
+export function adminLoginPage(portalBase = '') {
+  const bp = basePathOf(portalBase);
   return page('管理端 · 移动AI', `
 <div class="mark">mobile ai · admin</div>
 <h1 style="font-size:24px;margin-top:16px">管理控制台</h1>
@@ -217,9 +228,9 @@ export function adminLoginPage() {
 </div>` + `
 <script>
 async function login(){const m=document.getElementById('m');document.getElementById('go').disabled=true;
- try{const r=await fetch('/admin/login',{method:'POST',headers:{'content-type':'application/json'},
+ try{const r=await fetch('${bp}/admin/login',{method:'POST',headers:{'content-type':'application/json'},
   body:JSON.stringify({token:document.getElementById('tok').value.trim()})});
- if(r.ok){location.href='/admin';return}
+ if(r.ok){location.href='${bp}/admin';return}
  const d=await r.json().catch(()=>({}));m.textContent=d.error||('登录失败（'+r.status+'）');m.className='msg err';}
  catch(e){m.textContent='网络错误';m.className='msg err'}
  document.getElementById('go').disabled=false}
@@ -229,9 +240,10 @@ document.getElementById('tok').addEventListener('keydown',e=>{if(e.key==='Enter'
 }
 
 export function adminDashboard(portalBase) {
+  const bp = basePathOf(portalBase); // 子路径挂载（/mai）时内部跳转带前缀
   return page('管理控制台 · 移动AI', `
 <div class="top"><span class="mark">mobile ai · admin</span>
-<button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('/admin/logout',{method:'POST'}).then(()=>location.href='/')">退出</button></div>
+<button class="ghost" style="padding:6px 14px;font-size:13px" onclick="fetch('${bp}/admin/logout',{method:'POST'}).then(()=>location.href='${bp}/')">退出</button></div>
 <div class="card">
 <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">实时总览<span id="live-dot"></span>
 <span id="stats-updated" style="font-weight:400;font-size:12px;color:var(--muted)"></span>
@@ -266,12 +278,13 @@ export function adminDashboard(portalBase) {
 </div></div>
 <footer>移动AI 管理端 · ${esc(portalBase || '')}</footer>` + `
 <script>
+const BP=${JSON.stringify(bp)}; // 门户 base path（子路径挂载；根部署为 ""）
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function badge(st){const m={active:['ok','在线'],grace:['warn','宽限'],revoked:['err','已吊销'],suspended:['err','停用'],
  pending:['warn','待付款确认'],queued:['warn','排队中'],sent:['ok','已发送'],failed:['err','失败']};
  const k=m[st]||['',String(st??'')];return '<span class="badge '+k[0]+'">'+esc(k[1])+'</span>'}
 function tsFmt(t){return t?new Date(Number(t)).toLocaleString('zh-CN'):'—'}
-async function j(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});
+async function j(p,b){const r=await fetch(BP+p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});
  return{ok:r.ok,d:await r.json().catch(()=>({}))}}
 /* ---- P7：实时总览（/admin/stats，10s 轮询）---- */
 function money(c,cur){const u=String(cur||'usd').toLowerCase();const s={usd:'$',cny:'¥',eur:'€',gbp:'£'}[u]||(String(cur||'USD').toUpperCase()+' ');

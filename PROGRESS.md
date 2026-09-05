@@ -300,3 +300,70 @@ new dsh/
     ③ （新机器装客户端）`curl -fsSL https://newapi.email/i.sh | bash` → 本地控制台
     （静态分发已修复，此前该命令公网 404）④ DSH GUI https://dsh.newapi.email/
     （CF Access 邮箱验证，行为不变）
+- **2026-09-05（修订·用户定案）** 推翻 apex 门户方案：**newapi.email 主域名恢复原状
+  （New API 网关，绝不动）；全部 mobile ai 服务挂到 dsh.newapi.email（/mai 前缀）**：
+  - **用户指令**：① 恢复 https://newapi.email（主域名不能动）② 所有服务添加到
+    dsh.newapi.email 二级域 ③「后台管理界面怎么没有了」。
+  - **apex 恢复**（证据：~/.cloudflared/config.yml.bak.1787484297 = 5月原始配置
+    `newapi.email → http://192.168.0.131:3000`）：ingress 改回原值 →
+    **公网复验 ✓** https://newapi.email/ = 200 + `x-new-api-version: v1.0.0-rc.8`
+    （New API 网关完整恢复，含其自身管理界面）。本机 :3000 = Docker（com.docker *:3000），
+    192.168.0.131 即本机。
+  - **新架构（dsh.newapi.email 承载全部服务）**：新增 `control/edge.mjs`
+    （纯 node http 反代，LaunchAgent **com.mobileai.edge** :6430，仅回环；SSE 流式
+    pipe + WebSocket upgrade 透传）：`/mai、/mai/* → :6420 门户（剥前缀）；其余全部
+    → :3080 DSH GUI`。cloudflared ingress：dsh.newapi.email → 127.0.0.1:6430。
+    **DSH GUI 根路径行为完全不变**（仍 CF Access 登录墙）。
+  - **门户子路径适配（代码）**：site.js + index.js 支持 base path——
+    `basePathOf(PORTAL_BASE)`（https://dsh.newapi.email/mai → "/mai"；根部署 ""）：
+    落地页申请 fetch(BP+'/site/apply')、magic link 错误页退出按钮、/me 退出、
+    Stripe checkout fetch、admin 登录（fetch+location）、admin dashboard（BP 常量 +
+    j()=fetch(BP+p)）全部带前缀；index.js 4 处绝对跳转（/login→me、/me 无会话→落地页、
+    checkout 重定向、logout×2）改 bp+path。magic link URL = PORTAL_BASE+'/login?token='
+    （core.js 原样，自动带 /mai）。**回归：smoke-server 16/16 + e2e-p7 31/31 ✓**；
+    本地验证：坏 token → location.href='/mai/'、/me 无会话 302→/mai/、落地页
+    const BP="/mai" ✓。
+  - **地址定案（当前）**：
+    · https://newapi.email/            = New API 网关（**已恢复，主域名不再动**）
+    · https://dsh.newapi.email/        = DSH Web GUI（CF Access 邮箱验证，不变）
+    · https://dsh.newapi.email/mai     = mobile ai 门户（申请/magic link/我的页面）
+    · https://dsh.newapi.email/mai/admin = **mobile ai 后台管理台**（ADMIN_TOKEN
+      见 ~/.mobileai/control.env）← 用户问的「后台管理界面」在此
+    · https://dsh.newapi.email/mai/i.sh、…/mobileai.mjs = 安装脚本（客户端缺省
+      BASE/apiBase 已同步为 https://dsh.newapi.email/mai；static/ 4+1 文件已同步）
+    · control.env PORTAL_BASE=https://dsh.newapi.email/mai（门户已重启加载）
+  - **⚠ CF Access 现状**：dsh.newapi.email 的 Zero Trust App（org jutixinxi，
+    **非本机 CF token 所属账号——API 无法代改**）策略覆盖全部路径 → /mai/* 目前
+    **也在邮箱验证墙后**（实测公网 /mai/admin → 302 Access，redirect_url 保留
+    /mai/admin；过一次验证后同浏览器会话内畅通）。不影响 Ricky 自测（与用 DSH
+    GUI 同一个验证）；若要门户对公众自助开放 → Zero Trust dashboard（org jutixinxi）
+    Access→Applications→dsh.newapi.email→Policies 加 URI Exclude `/mai/*`（2 分钟）。
+  - **防误操作**：deploy-local.sh 头部加「已废弃」守卫（其 ingress 步会把 apex
+    指回 :6420，破坏已恢复的网关；MAI_FORCE_DEPLOY=1 才放行）。
+  - **已知缺口（更新）**：mai.newapi.email DNS 仍断（修复=Zero Trust org jutixinxi
+    注册公共主机名，可选）；New API 网关 apex 公网地址**已恢复**（上一版记录的
+    「失去」作废）；Stripe 未注册不变；/mai/* CF Access 排除待用户操作（可选）。
+- **2026-09-05（续3 · 会话断线接管）** /mai 修订版全面核验 + apex 事故恢复，全部落库：
+  - **全面核验**（本会话实测）：launchd×3 running（com.mobileai.edge :6430 / com.mobileai.control
+    日志 portal=https://dsh.newapi.email/mai :6420 / mailer）；cloudflared new-api-tunnel 已重载
+    新配置（4 conn registered，ingress：apex→192.168.0.131:3000、dsh→127.0.0.1:6430 edge、
+    mai 占位）；本地路由 ✓（/mai/healthz=ok、`/` → DSH GUI __DSH_BOOT__ 正常代理、
+    i.sh BASE + mobileai.mjs apiBase = https://dsh.newapi.email/mai、i.ps1 同步）；
+    公网 dsh.newapi.email/ → 302 CF Access（GUI 行为不变）、/mai/admin redirect_url=/mai/admin ✓。
+  - **apex 公网 502 事故（已恢复）**：接管时 https://newapi.email/ = 502——根因 **Docker Desktop
+    停止**（new-api 容器 down，cloudflared 日志 `dial tcp 192.168.0.131:3000 connection refused`），
+    非隧道/配置问题 → `open -a Docker` 恢复（new-api + qdrant Up）→ **公网复验 ✓**
+    https://newapi.email/ 200 + `x-new-api-version: v1.0.0-rc.8`（New API 网关完整恢复）。
+    **教训：apex 可用性依赖 Docker Desktop 常驻；Mac 重启后需确认 Docker 自启。**
+  - **回归复跑（working tree）**：smoke-server **16/16 PASS** + e2e-p7 **31 PASS / 0 FAIL**。
+  - **deploy-local.sh 废弃守卫补齐**（上一条「已加守卫」实际未落盘）：默认运行 exit 1
+    （其 ingress 步会把 apex 指回 :6420，破坏已恢复网关），`MAI_FORCE_DEPLOY=1` 才放行；
+    bash -n + 双路径实测 ✓，头部注释标注废弃。
+  - **提交推送**：本条 + edge.mjs（新增）+ site.js/index.js basePathOf 子路径支持 +
+    客户端默认地址 → https://dsh.newapi.email/mai（i.sh/i.ps1/guide.md/mobileai.mjs
+    + static/ 同步）+ deploy-local.sh 守卫 + PROGRESS/GUIDE 文档 → commit + push origin
+    （公开仓 ricky8848/mobile-ai）。
+  - **用户测试清单** = docs/GUIDE.md「0. 当前生产状态（修订版）」6 步：① DSH GUI
+    （先过一次 CF Access）→ ② /mai 门户 + magic link → ③ /mai/admin 管理台
+    （ADMIN_TOKEN）→ ④ 主域名恢复确认（New API 网关页）→ ⑤ 装客户端（可选，
+    curl https://dsh.newapi.email/mai/i.sh | bash）→ ⑥ healthz。

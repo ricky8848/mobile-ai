@@ -148,23 +148,24 @@ export default {
 
     // ---- 门户（P4：落地页 / magic link 登录 / 我的页面）----
     const portalBase = env.PORTAL_BASE || ('https://' + env.DOMAIN);
-    if (req.method === 'GET' && url.pathname === '/') return html(landingPage());
+    let bp = ''; try { bp = new URL(portalBase).pathname.replace(/\/+$/, ''); } catch {} // 子路径挂载（/mai）
+    if (req.method === 'GET' && url.pathname === '/') return html(landingPage(portalBase));
     if (req.method === 'POST' && url.pathname === '/site/apply') return out(await apply(db, body, portalBase, ts));
     if (req.method === 'GET' && url.pathname === '/login') {
       const uid = await consumeMagicLink(db, url.searchParams.get('token'), ts);
-      if (!uid) return html(loginErrorPage());
+      if (!uid) return html(loginErrorPage(undefined, portalBase));
       const tok = await createSession(db, uid, ts);
-      return new Response(null, { status: 302, headers: { location: '/me', 'set-cookie': `mai_session=${tok}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` } });
+      return new Response(null, { status: 302, headers: { location: bp + '/me', 'set-cookie': `mai_session=${tok}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` } });
     }
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
-      if (!u) return new Response(null, { status: 302, headers: { location: '/' } });
+      if (!u) return new Response(null, { status: 302, headers: { location: bp + '/' } });
       return html(mePage(await mePayload(db, u), portalBase, env.DOMAIN, paymentInfoFromEnv(env),
         { justPaid: url.searchParams.get('paid') === '1' })); // P7：Stripe success_url 回跳
     }
     if (req.method === 'POST' && url.pathname === '/site/pay/checkout') { // P7：创建 Stripe Checkout（需门户会话）
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
-      if (!u || u.status !== 'pending') return new Response(null, { status: 302, headers: { location: '/me' } });
+      if (!u || u.status !== 'pending') return new Response(null, { status: 302, headers: { location: bp + '/me' } });
       if (await db.unusedCodeForUser(u.id)) return json({ error: '你已有未使用的认证码，无需重复付款' }, 409);
       const pay = paymentInfoFromEnv(env);
       try {
@@ -174,7 +175,7 @@ export default {
       } catch (e) { return json({ error: '创建支付会话失败：' + String(e.message || e) }, 502); }
     }
     if (req.method === 'POST' && url.pathname === '/site/logout') {
-      return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': 'mai_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
+      return new Response(null, { status: 302, headers: { location: bp + '/', 'set-cookie': 'mai_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
     }
 
     // ---- 管理端（P6：/admin 控制台；Bearer ADMIN_TOKEN 或 mai_admin cookie）----
@@ -184,7 +185,7 @@ export default {
       (adminTok && await adminSessionOk(db, adminTok))));
 
     if (req.method === 'GET' && url.pathname === '/admin') {
-      return html(adminOk ? adminDashboard(portalBase) : adminLoginPage());
+      return html(adminOk ? adminDashboard(portalBase) : adminLoginPage(portalBase));
     }
     if (req.method === 'POST' && url.pathname === '/admin/login') {
       if (!env.ADMIN_TOKEN || String(body.token || '') !== env.ADMIN_TOKEN) return json({ error: '令牌不正确' }, 401);
@@ -194,7 +195,7 @@ export default {
     }
     if (req.method === 'POST' && url.pathname === '/admin/logout') {
       if (adminTok) await deleteAdminSession(db, adminTok);
-      return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': 'mai_admin=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
+      return new Response(null, { status: 302, headers: { location: bp + '/', 'set-cookie': 'mai_admin=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' } });
     }
 
     if (url.pathname.startsWith('/admin/')) {
