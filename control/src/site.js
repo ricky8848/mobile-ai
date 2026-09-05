@@ -254,7 +254,7 @@ export function adminDashboard(portalBase) {
 <label>邮件队列 <span id="e-count" style="font-weight:400;font-size:12px"></span></label>
 <table><thead><tr><th>收件人</th><th>主题</th><th>状态</th><th>创建时间</th><th style="width:70px">操作</th></tr></thead>
 <tbody id="e-body"><tr><td colspan=5 style="color:var(--muted)">加载中…</td></tr></tbody></table>
-<p style="font-size:12px;color:var(--muted);margin-top:8px">队列由 mailer.mjs（家中机器常驻）轮询发出；MOCK 模式打印到 /tmp/mai-mailer.log。点「查看」看正文（magic link / 认证码）。</p>
+<p style="font-size:12px;color:var(--muted);margin-top:8px">队列由 mailer.mjs（家中机器常驻）轮询发出；MOCK 模式打印到 /tmp/mai-mailer.log。点「查看」看正文（magic link / 认证码）。<b>「失败」是中间状态：每 5 分钟自动重试直到发出（如 SMTP/网络抖动），无需手动处理。</b></p>
 </div>
 <div id="mail-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;padding:24px;overflow:auto">
 <div style="max-width:680px;margin:24px auto;background:#fff;color:#1d1d1f;border:1px solid rgba(0,0,0,.2);border-radius:14px;padding:20px 22px">

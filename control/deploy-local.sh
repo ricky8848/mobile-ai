@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 # mobile ai — 本地生产部署（免费先）· deploy-local.sh 【现有隧道模式】
 #
-# 设计定案（2026-09-04）：**不动既有 new-api-tunnel 的任何现有条目**——
-#   · dsh.newapi.email → DSH Web GUI(:3080，CF Access 保护)   ← 保持
-#   · newapi.email     → New API 网关(192.168.0.131:3000)     ← 保持
-# 移动AI门户挂 **mai.newapi.email**，复用同一隧道：只新增一条 ingress + 一条全新 CNAME。
-# 不建第二隧道、不接管任何既有主机名；cloudflared 保持现有运行方式（nohup，非 launchd）。
+# 设计定案（2026-09-05）：门户 = **newapi.email**（apex，Zero Trust 公共主机名——
+# CF 为其自动注入 A 记录；CNAME → <uuid>.cfargotunnel.com 无 A 记录不可用，勿建）。
+#   · newapi.email     → mobile ai 门户/控制面(:6420)          ← 本脚本管理
+#   · dsh.newapi.email → DSH Web GUI(:3080，CF Access 保护)   ← 绝不动
+# 复用既有 new-api-tunnel：只新增一条 ingress，不建第二隧道；cloudflared 保持现有运行方式（nohup）。
+# ⚠ 2026-09-05 后果记录：apex 原公网地址为 New API 网关（Docker :3000，本机即 192.168.0.131），
+#   apex 接管后该网关仅局域网可达；如需恢复公网 → 另注册子域为 Zero Trust 公共主机名（如 api.newapi.email）。
 #
-# 前置：cloudflared 已安装 + `cloudflared tunnel login`（浏览器 OAuth，仅 CNAME 创建用）。
+# 前置：cloudflared 已安装 + `cloudflared tunnel login`（浏览器 OAuth，仅子域 CNAME 创建用）。
 # 效果：
 #   1) ~/.mobileai/control.env        — CF token + ADMIN_TOKEN（生成一次，chmod 600）
-#   2) ~/.cloudflared/config.yml      — 追加 ingress: mai.newapi.email → http://127.0.0.1:6420（先备份，幂等）
-#   3) DNS CNAME mai.newapi.email     → <既有隧道 id>.cfargotunnel.com（只新增这一条记录）
+#   2) ~/.cloudflared/config.yml      — 追加 ingress: newapi.email → http://127.0.0.1:6420（先备份，幂等）
+#   3) DNS：apex = Zero Trust 托管（跳过 CNAME；见下方第4步说明）
 #   4) cloudflared 重启加载配置 + :6420 mock → server.mjs（持久化 SQLite）
 #   5) LaunchAgent ×2                 — control / mailer（重启自启）
-#   6) https://mai.newapi.email/healthz 验证（DNS 传播最多 ~1min）
-# 幂等：重跑安全。newapi.email 根域与 dsh.newapi.email（含 CF Access）绝不动。
+#   6) https://newapi.email/healthz 验证（DNS 传播最多 ~1min）
+# 幂等：重跑安全。dsh.newapi.email（含 CF Access）绝不动。
 set -uo pipefail
 
 DOMAIN=newapi.email
-PORTAL_HOST=mai.newapi.email
+PORTAL_HOST=$DOMAIN   # 门户 = apex（2026-09-05 定案）
 TUNNEL_NAME=new-api-tunnel          # 既有隧道名（保持其运行方式，仅重启加载新配置）
 API_PORT=${MAI_API_PORT:-6420}
 CTL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -74,10 +76,14 @@ else
   chmod 600 "$ENVF"; echo "✓ $ENVF 已存在，补齐缺失字段"
 fi
 
-say "3/6 既有隧道配置追加门户 ingress（先备份；幂等）"
+say "3/6 既有隧道配置写入门户 ingress（先备份；幂等）"
 CFG="$HOME/.cloudflared/config.yml"
 if grep -q "hostname: $PORTAL_HOST\$" "$CFG"; then
-  echo "✓ ingress 已存在（$PORTAL_HOST → :$API_PORT），跳过"
+  # 已存在 → 校正 service（node 实现：macOS BSD sed 不支持 {n;s|...|} 块语法）
+  node -e 'const fs=require("fs");let s=fs.readFileSync(process.argv[1],"utf8").split("\n");
+    for(let i=0;i<s.length-1;i++){if(s[i].trim()==="- hostname: "+process.argv[2]){s[i+1]="    service: http://127.0.0.1:"+process.argv[3];break;}}
+    fs.writeFileSync(process.argv[1],s.join("\n"))' "$CFG" "$PORTAL_HOST" "$API_PORT"
+  echo "✓ ingress $PORTAL_HOST 已存在，service 校正为 127.0.0.1:$API_PORT"
 else
   cp "$CFG" "$CFG.bak.$(date +%s)"
   awk -v h="$PORTAL_HOST" -v s="http://127.0.0.1:$API_PORT" '
@@ -89,16 +95,30 @@ else
   echo "✓ 已追加 $PORTAL_HOST → 127.0.0.1:$API_PORT（备份：$CFG.bak.*；dsh/根域条目未动）"
 fi
 
-say "4/6 DNS CNAME $PORTAL_HOST（只新增这一条；根域与 dsh 记录不碰）"
-ZONE_ID=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
-  -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].id')
-[ -n "$ZONE_ID" ] || fail "zone $DOMAIN 不在该 CF 账号下（NS 未切到 Cloudflare？）"
-# 先删同名的旧记录（可能不存在），再建新的 → <既有隧道 id>.cfargotunnel.com
-curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=CNAME&name=$PORTAL_HOST" \
-  -H "Authorization: Bearer $CF_TOKEN" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",async()=>{try{const j=JSON.parse(d);for(const r of (j.result||[])){await fetch("https://api.cloudflare.com/client/v4/zones/dns_records/"+r.id,{method:"DELETE",headers:{Authorization:"Bearer "+process.argv[1]}});console.log("  - 删除旧记录 "+r.id)}}catch{}}' "$CF_TOKEN"
-curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
-  -H "Authorization: Bearer $CF_TOKEN" -X POST -d "{\"type\":\"CNAME\",\"name\":\"$PORTAL_HOST\",\"content\":\"$TUNNEL_ID.cfargotunnel.com\",\"ttl\":120}" \
-  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.success?"  ✓ CNAME 已建":"  ✗ "+(j.errors||[])[0].message)}catch{console.log("  ? 响应异常")}})'
+say "4/6 DNS $PORTAL_HOST"
+if [ "$PORTAL_HOST" = "$DOMAIN" ]; then
+  echo "✓ apex 是 Zero Trust 注册的公共主机名——A 记录由 CF 自动注入（zone API 不可见），DNS 在 Zero Trust 侧管理"
+  echo "   （勿对 apex 建 CNAME：CNAME → <uuid>.cfargotunnel.com 无 A 记录，解析必断。"
+  echo "    apex 失解时查 Zero Trust → Tunnels → Public Hostname：newapi.email 须指向本隧道）"
+else
+  # ⚠ 子域 CNAME → <uuid>.cfargotunnel.com 只有在该子域同时是 Zero Trust 公共主机名时才可解析
+  #   （CF 才会为其注入 A 记录）；否则先注册公共主机名，再跑本步（2026-09-05 mai 教训）。
+  ZONE_ID=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
+    -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].id')
+  [ -n "$ZONE_ID" ] || fail "zone $DOMAIN 不在该 CF 账号下（NS 未切到 Cloudflare？）"
+  CUR=$(curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=CNAME&name=$PORTAL_HOST" \
+    -H "Authorization: Bearer $CF_TOKEN" | jget '' '.result[0].content')
+  if [ "$CUR" = "$TUNNEL_ID.cfargotunnel.com" ]; then
+    echo "✓ CNAME $PORTAL_HOST 已指向本隧道（$CUR），跳过"
+  else
+    # 先删同名的旧记录（可能不存在），再建新的 → <既有隧道 id>.cfargotunnel.com
+    curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=CNAME&name=$PORTAL_HOST" \
+      -H "Authorization: Bearer $CF_TOKEN" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",async()=>{try{const j=JSON.parse(d);for(const r of (j.result||[])){await fetch("https://api.cloudflare.com/client/v4/zones/dns_records/"+r.id,{method:"DELETE",headers:{Authorization:"Bearer "+process.argv[1]}});console.log("  - 删除旧记录 "+r.id)}}catch{}}' "$CF_TOKEN"
+    curl -s --max-time 15 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+      -H "Authorization: Bearer $CF_TOKEN" -X POST -d "{\"type\":\"CNAME\",\"name\":\"$PORTAL_HOST\",\"content\":\"$TUNNEL_ID.cfargotunnel.com\",\"ttl\":120}" \
+      | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.success?"  ✓ CNAME 已建":"  ✗ "+(j.errors||[])[0].message)}catch{console.log("  ? 响应异常")}})'
+  fi
+fi
 
 say "5/6 :6420 mock → server.mjs（持久化 SQLite）+ 重启 cloudflared 加载配置"
 HZ=$(curl -s --max-time 3 "http://127.0.0.1:$API_PORT/healthz" 2>/dev/null || true)
@@ -132,7 +152,7 @@ mk_agent() { # $1=label 其余为 argv（元素内不可含双引号）；返回
     "<key>RunAtLoad</key><true/>","<key>KeepAlive</key><true/>",
     `<key>StandardOutPath</key><string>/tmp/mai-${process.argv[1].split(".").pop()}.log</string>`,
     `<key>StandardErrorPath</key><string>/tmp/mai-${process.argv[1].split(".").pop()}.log</string>`,
-    "</dict></plist>"].join("\n");fs.writeFileSync(process.argv[3],s)' "$label" "$json" "$LA/$1.plist"
+    "</dict></plist>"].join("\n");fs.writeFileSync(process.argv[3],s)' "$label" "$json" "$LA/$label.plist"
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1
   launchctl bootstrap "gui/$(id -u)" "$LA/$label.plist" && return 0 || { echo "⚠ $label bootstrap 失败（手动：launchctl load $LA/$1.plist）"; return 1; }
 }

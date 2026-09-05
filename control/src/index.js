@@ -1,6 +1,6 @@
 // mobile ai（移动AI）· 控制面 Worker 入口：路由 + D1 适配器。
 // 业务逻辑全在 core.js；CF 调用走 cf.js（makeCf(env)）。
-import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
+import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, enqueueEmail, trialCodeEmail, claimEmail, claimableEmails, emailStaleMs, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
   paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings,
   adminStats, ONLINE_WINDOW_MS } from './core.js';
 import { createStripeCheckout, handleStripeWebhook } from './stripe.js';
@@ -59,6 +59,13 @@ function dbAdapter(db) {
       .bind(r.id, r.to_email, r.subject, r.body_text, r.status || 'queued', null, r.created_at, r.updated_at).run(),
     updateEmail: (id, fields, ts) => { const sets = Object.keys(fields).map((k) => `${k}=?`).join(', '); return db.prepare(`UPDATE emails SET ${sets}, updated_at=? WHERE id=?`).bind(...Object.values(fields), ts, id).run(); },
     listEmails: async (status, limit) => { const q = status ? db.prepare('SELECT * FROM emails WHERE status=? ORDER BY created_at ASC LIMIT ?').bind(status, limit) : db.prepare('SELECT * FROM emails ORDER BY created_at DESC LIMIT ?').bind(limit); return (await q.all()).results; },
+    // 原子领取：条件 UPDATE，多 mailer/重复轮询并发时只有一个 changes>0
+    claimEmail: async (id, staleBeforeTs) => { const r = await db.prepare("UPDATE emails SET status='sending', error=NULL, updated_at=? WHERE id=? AND (status IN ('queued','failed') OR (status='sending' AND updated_at<?))").bind(Date.now(), id, staleBeforeTs).run(); return r.changes > 0; },
+    // 状态守卫：sent 为终态，迟到的失败回报不得把 sent 打回 failed
+    markEmail: async (id, ok, error, ts) => { await db.prepare(ok
+      ? "UPDATE emails SET status='sent', error=NULL, updated_at=? WHERE id=? AND status<>'sent'"
+      : "UPDATE emails SET status='failed', error=?, updated_at=? WHERE id=? AND status<>'sent'").bind(...(ok ? [ts, id] : [error || null, ts, id])).run(); },
+    claimableEmails: async (staleBeforeTs, limit) => { const q = db.prepare("SELECT * FROM emails WHERE status='queued' OR (status='sending' AND updated_at<?) ORDER BY created_at ASC LIMIT ?").bind(staleBeforeTs, limit); return (await q.all()).results; },
     session: (t) => db.prepare('SELECT * FROM sessions WHERE token=?').bind(t).first(),
     createSession: (r) => db.prepare('INSERT INTO sessions (token,user_id,created_at,expires_at) VALUES (?,?,?,?)').bind(r.token, r.user_id, r.created_at, r.expires_at).run(),
     listBindings: async (status) => status
@@ -195,7 +202,10 @@ export default {
       const db2 = db; // 便于阅读
       if (req.method === 'POST' && url.pathname === '/admin/user') { const u = await ensureUser(db2, body.email, ts); return json({ ok: true, email: u.email, status: u.status }); }
       if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(await markOrderPaid(db2, { ...body, amountCents: Number(env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
-      if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(await issueCode(db2, { email: body.email }, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/issue-code') { // 试用码：签发 + 发邮件（测试阶段免费）
+        const r = await issueCode(db2, { email: body.email }, ts);
+        if (!r.error) await enqueueEmail(db2, { to_email: String(body.email), subject: '移动AI — 你的试用码', body_text: trialCodeEmail(String(body.email), r.code) }, ts);
+        return out(r); }
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(await db2.listUsers());
       if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(await adminBindings(db2, { status: url.searchParams.get('status') }));
       if (req.method === 'GET' && url.pathname === '/admin/emails') return json({ queued: await db2.listEmails('queued', 10),
@@ -207,7 +217,9 @@ export default {
           stripe_events_recent: await db2.recentStripeEvents(5) });
       }
       if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(await revokeBinding(db2, body.id, ts));
-      if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json({ emails: await db2.listEmails('queued', 10) });
+      const staleMs = emailStaleMs(env); // P3b：claim 机制（防重复发送）
+      if (req.method === 'POST' && url.pathname === '/admin/email-claim') { const claimed = await claimEmail(db2, body.id, ts, staleMs); return json({ ok: true, claimed }); }
+      if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json({ emails: await claimableEmails(db2, ts, 10, staleMs) });
       if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db2, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json({ ok: true }); }
       return json({ error: 'not found' }, 404);
     }

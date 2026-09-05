@@ -15,6 +15,13 @@
 | `src/index.js` | Worker 入口：路由 + D1 适配层 |
 | `mock-server.mjs` | 本地 mock 控制面（无 CF，P2b 本机 E2E 用；`STRIPE_MOCK=1` 含假 Stripe） |
 | `e2e-p7.mjs` | P7 E2E 脚本（Stripe mock 全流程 + webhook 验签/幂等 + /admin/stats） |
+| `smoke-server.mjs` | server.mjs 全旅程冒烟（16/16；P8） |
+| `server.mjs` | **本地生产控制面**（Node24 + node:sqlite 跑同一份 Worker 代码；含静态分发 i.sh/i.ps1/mobileai.mjs/app.js/guide.md ← ../client/） |
+| `mailer.mjs` | 邮件队列轮询发送（nodemailer 多邮箱轮转 + failed 自动重试 MAIL_RETRY_MS） |
+| `deploy-local.sh` | 一键本地生产部署（现有隧道模式；2026-09-05 apex 口径，幂等） |
+| `deploy-now.sh` | 一次性上线脚本（2026-09-05；跳过 CF API 步骤） |
+| `queue-mail.mjs` | 一次性脚本：向 emails 表插一条 queued 邮件（手动通知用，mailer ≤5s 发出） |
+| `static/` | CF Workers 部署的静态副本（wrangler assets；与 client/ 同步，含 i.ps1） |
 
 ## API（客户端契约，与 client/src/mobileai.mjs 对齐）
 
@@ -61,7 +68,32 @@
 无需预建 Product/Price：Checkout session 用动态 `price_data`（金额取
 `PAYMENT_AMOUNT_CENTS`）。二维码/银行转账保留为备用渠道（半自动确认不变）。
 
-## 部署（需 CF 凭据，v0.3）
+## 本地生产部署（当前形态，2026-09-05）
+
+实际运行的是 `server.mjs`（非 CF Workers——零成本 + 免 wrangler token；Workers/D1
+路径保留为备选，见下节）。
+
+**运行组件（家里 Mac）**
+
+| 组件 | 形态 | 说明 |
+|---|---|---|
+| `server.mjs` :6420 | launchd `com.mobileai.control`（KeepAlive） | 门户 + API；日志 /tmp/mai-control.log |
+| `mailer.mjs` | launchd `com.mobileai.mailer`（经 ~/.mobileai/run-mailer.sh source control.env） | 5s 轮询 /admin/email-queue；Gmail（xunricky@gmail.com，应用专用密码）；日志 /tmp/mai-mailer.log |
+| cloudflared `new-api-tunnel` | nohup（非 launchd；模板 com.dsh.cloudflared.plist 未启用） | ingress：`newapi.email → :6420`（门户）、`dsh.newapi.email → localhost:3080`（DSH GUI，CF Access 保护）、`mai.newapi.email → :6420`（DNS 暂断，待 Zero Trust 注册后恢复） |
+
+**DNS 关键事实（2026-09-05 验证）**：apex/dsh 是 Zero Trust 公共主机名 → CF 自动注入
+A 记录（zone API 不可见，**勿对 apex 建 CNAME**）；子域 CNAME → `<uuid>.cfargotunnel.com`
+只有先注册为公共主机名才可解析（mai 教训，见 deploy-local.sh 第4步）。
+
+**数据/凭据**：`~/.mobileai/control.db`（SQLite，schema.sql 幂等初始化）；
+`~/.mobileai/control.env`（chmod 600：PORT/DOMAIN/PORTAL_BASE=https://newapi.email/
+ADMIN_TOKEN/CF_*/MAIL_ACCOUNTS）——**含密码，勿提交仓库**。
+
+**验证**：本地 `curl -s http://127.0.0.1:6420/healthz`；公网
+`curl -s https://newapi.email/healthz` + `/i.sh`（200）；全球 E2E 用
+`../dns-probe/`（US runner push 触发，纯 DNS = 手机相同解析路径）。
+
+## 部署到 CF Workers（备选，需 CF 凭据）
 
 ```sh
 cd control

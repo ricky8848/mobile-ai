@@ -5,6 +5,61 @@
 
 ---
 
+## 0. 当前生产状态（2026-09-05，测试前必读）
+
+### 三个公网地址（均已全球可解析，含国内网络）
+
+| 地址 | 是什么 | 状态 |
+|---|---|---|
+| **https://newapi.email/** | mobile ai 门户/控制面（申请、magic link 登录、我的页面）+ 一键安装脚本 | ✅ 当前门户（2026-09-05 由 mai.newapi.email 切换而来） |
+| **https://dsh.newapi.email/** | DSH Web GUI 直连（CF Access 邮箱验证登录墙） | ✅ 保持原样，不受门户切换影响 |
+| https://mai.newapi.email/ | 旧门户地址 | ⚠️ DNS 暂不可用（根因见下），修复后恢复，期间一律用新地址 |
+
+**旧链接不可用的根因（一句话）**：Cloudflare 只为在 Zero Trust 注册过的公共主机名
+注入 A 记录；mai.newapi.email 从未注册，其 CNAME（→ `*.cfargotunnel.com`）永远到不了 IP。
+dsh / newapi.email 是 5 月注册的，所以正常。**修复 mai = 在 Zero Trust → Tunnels
+把它注册为公共主机名（指向 new-api-tunnel），CNAME 可保留。**
+
+### 手机端测试清单（按序）
+
+1. **门户**：手机浏览器打开 `https://newapi.email/`（或邮件「DSH 远程访问 ·
+   新链接」em_13bfd57b1ff2 里的链接）→ 应看到黑白极简门户页（不是报错/超时）。
+2. **登录**：首页填 xunricky@gmail.com → 收 magic link（Gmail，≤5s）→
+   点开链接自动登录 → `/me` 页（当前状态：待付款确认）。
+3. **DSH GUI**：打开 `https://dsh.newapi.email/` → CF Access 邮箱验证（与以前完全一致）
+   → 登录后可操作家里 Mac 的完整 DSH。
+4. **安装客户端（可选，在新机器上）**：
+   ```sh
+   curl -fsSL https://newapi.email/i.sh | bash    # macOS / Linux
+   irm https://newapi.email/i.ps1 | iex           # Windows PowerShell
+   ```
+   → 自动下载组件 + 弹本地控制台（2026-09-05 已修复：此前该命令公网 404）。
+   「认证码」在 /me 页获取（需先确认收款/试用码）。
+5. **健康检查（任何设备终端）**：`curl -s https://newapi.email/healthz`
+   → `{"ok":true,"service":"mobileai-control"}`。
+
+### 本机（家里 Mac）运维速查
+
+```sh
+launchctl print gui/$(id -u)/com.mobileai.control | head   # 控制面（server.mjs :6420）
+launchctl print gui/$(id -u)/com.mobileai.mailer | head    # 邮件轮询（Gmail，5s/次）
+tail -20 /tmp/mai-control.log                              # 控制面日志（末行含 portal=）
+tail -20 /tmp/mai-mailer.log                               # 发信日志（sent em_xxx）
+curl -s http://127.0.0.1:6420/healthz                      # 本机健康检查
+```
+
+- 数据：`~/.mobileai/control.db`（SQLite）· env/令牌：`~/.mobileai/control.env`（chmod 600，
+  **含 Gmail 应用专用密码与 ADMIN_TOKEN——勿外传、勿提交仓库**）
+- 隧道：cloudflared `new-api-tunnel`（nohup；ingress：apex→:6420 门户、
+  dsh.newapi.email→:3080 GUI）；launchd 模板 `control/com.dsh.cloudflared.plist`（未启用，
+  保持现有 nohup 运行方式）
+- **全球验证工具**：`new dsh/dns-probe/`（独立仓 ricky8848/dsh-dns-probe）——
+  push/手动触发即在美国 runner 上跑纯 DNS + curl E2E（与手机相同解析路径）
+- **已知**：apex 接管后 New API 网关（Docker :3000）仅局域网可达
+  （http://192.168.0.131:3000）；Stripe 未注册 → /me「在线支付」按钮隐藏（QR 占位）
+
+---
+
 ## 1. 这是什么 / 不是什么
 
 ```

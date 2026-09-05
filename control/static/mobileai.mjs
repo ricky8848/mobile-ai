@@ -120,7 +120,7 @@ function cfAlive() { const s = readState(); if (!s.cfPid) return false; try { pr
 function stopCloudflared() { try { process.kill(readState().cfPid, 'SIGTERM'); } catch {} const s = readState(); delete s.cfPid; writeState(s); }
 
 /* ---------------- control plane client ------------------------------------- */
-function apiBase() { return process.env.MOBILEAI_API || readState().apiBase || 'https://mai.newapi.email'; }
+function apiBase() { return process.env.MOBILEAI_API || readState().apiBase || 'https://newapi.email'; }
 async function apiCall(ep, body) {
   const r = await fetch(apiBase() + ep, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),

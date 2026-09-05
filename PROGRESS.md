@@ -238,3 +238,65 @@ new dsh/
   - **deploy-local.sh**：装 mailer LaunchAgent 前先 pkill 手动 mailer（防双轮询重复发信）。
     ⚠ 部署时 control.env 需追加 `MAIL_ACCOUNTS="xunricky@gmail.com:<密码>"`（由本会话
     代跑时写入，脚本本身不含该值）。
+- **2026-09-05** 门户 DNS 根因定位 + 门户改挂 **newapi.email（apex）**，全球 E2E ✅：
+  - **症状**：手机打不开邮件里的 https://mai.newapi.email（国内/部分网络超时）。
+  - **根因**（`dns-probe/` 独立仓 ricky8848/dsh-dns-probe：US GitHub runner 纯 DNS +
+    国内多解析器交叉验证）：CF 隧道 DNS overlay **不为 `*.cfargotunnel.com`（uuid
+    主机名）发布 A 记录**；**dsh.newapi.email / newapi.email（apex）是 5 月在 Zero Trust
+    注册的公共主机名** → CF 为其自动注入 A 记录（可解析）；**mai.newapi.email 从未注册**
+    → CNAME 链 `<uuid>.cfargotunnel.com` 到不了 A，永远解析不出 IP。
+    （实测：dig @223.5.5.5 apex/dsh → CF 边缘 A（104.21.x/172.67.x）✓；mai → 只有 CNAME，
+    其后无 A ✗；US runner `getent hosts newapi.email` rc=0。CF 会为非注册名合成自己的 CNAME，
+    但同样无 A。）
+  - **修复定案**：门户改挂 **https://newapi.email/**（apex，已是注册公共主机名）：
+    ① ~/.cloudflared/config.yml 追加 ingress `newapi.email → http://127.0.0.1:6420`
+    （dsh → localhost:3080 不动；mai 条目保留但 DNS 断）
+    ② control.env `PORTAL_BASE=https://newapi.email` → 控制面重启（launchd
+    com.mobileai.control；日志末行 portal=https://newapi.email）③ cloudflared 重启加载。
+    **DSH GUI（dsh.newapi.email，CF Access 登录墙 org jutixinxi）完全不受影响**。
+  - **⚠ 副作用（记录在案）**：apex 原公网地址是 New API 网关（Docker :3000，本机即
+    192.168.0.131）——apex 接管后该网关**仅局域网可达**（http://192.168.0.131:3000）；
+    如需恢复公网 → 另注册子域为 Zero Trust 公共主机名（如 api.newapi.email）+ ingress。
+  - **通知邮件**：新增 `control/queue-mail.mjs`（一次性脚本：向 emails 表插一条 queued，
+    mailer ≤5s 领取经 Gmail 发出）→ **em_13bfd57b1ff2 sent**（主题「DSH 远程访问 ·
+    新链接（newapi.email）」，正文给 https://newapi.email/）。
+  - **全球 E2E ✅**（dns-probe run=33951879791，US runner 纯 DNS = 与手机相同解析路径）：
+    `getent newapi.email` rc=0；https://newapi.email/healthz →
+    `{"ok":true,"service":"mobileai-control"}`；https://newapi.email/ → 200（ip=104.21.34.35）；
+    https://dsh.newapi.email/ → 302（CF Access，GUI 不受影响）。
+    **国内复核 ✅**（本机）：dig @223.5.5.5 apex/dsh → CF 边缘 A ✓；live curl
+    healthz ok + / 200（即手机在国内网络的实际路径）。
+  - **本会话修复与记录**：
+    ① **server.mjs 缺静态分发（生产 bug）**——公网 /i.sh、/mobileai.mjs 等全 404
+    （mock-server 与 wrangler assets static/ 都有，Node 生产路径漏了）→ 补 STATIC_FILES
+    （i.sh/i.ps1/mobileai.mjs/app.js/guide.md，直接从 ../client/ 取文件 = 单一事实源）；
+    踩坑：`new URL(import.meta.url).pathname` 把目录名里的**空格编码成 %20** →
+    readFileSync ENOENT 静默落回 404，改 `fileURLToPath`（P7 e2e cwd %20 同类）。
+    **公网复验**：5 个静态端点全 200，i.sh BASE / mobileai.mjs apiBase = https://newapi.email。
+    ② **客户端默认地址对齐**（中间态残留 mai→dsh）：client/i.sh+i.ps1 BASE、mobileai.mjs
+    apiBase 缺省 → https://newapi.email；control/static/ 同步 4 文件 + **补 i.ps1**
+    （static/ 原先缺，Windows 一行命令也 404）。
+    ③ **deploy-now.sh 去除明文 Gmail 应用专用密码**（原 MAIL_ACCOUNTS 行硬编码；
+    凭据只允许存在于 control.env，chmod 600）。
+    ④ **deploy-local.sh 更新为 apex 口径**：PORTAL_HOST=newapi.email；第4步 CNAME →
+    「apex = Zero Trust 托管（A 记录 zone API 不可见，已实测）→ 跳过」；子域路径保留
+    原逻辑 + 警示（子域须先注册 Zero Trust 公共主机名，mai 教训）。
+    ⑤ .gitignore + dns-probe/（嵌套独立仓，不入库）。
+    ⑥ **P3b mailer 防重复发送**（前一会话遗留未提交，一并记录）：mailer.mjs
+    先 POST /admin/email-claim（queued→sending 原子领取，core.claimEmail + index.js
+    端点）领到才发；mark 回报检查 HTTP 状态码（非 200 → MARK-FAIL）；SMTP
+    socketTimeout 30s（env SMTP_TIMEOUT_MS）+ sendWithDeadline 90s 兜底
+    （SEND_DEADLINE_MS，DNS/SYN 黑洞/TLS/认证挂起快速失败 → failed → RETRY_MS
+    自动重试）；inFlight Set 同进程去重。实测：em_zehv7xvrqjsy ETIMEDOUT 后
+    自动重试成功（/tmp/mai-mailer.log）。
+  - **已知缺口**：mai.newapi.email 仍断（修复 = Zero Trust 注册公共主机名指向本隧道，
+    CNAME 可保留）；New API 网关失去 apex 公网地址（见上⚠）；Stripe 未注册
+    （/me 在线支付按钮隐藏、QR 占位，P7 手动项不变）；用户数据面隧道无 CF Access
+    邮箱验证（guide.md 第4步未来项）；xunricky@gmail.com = pending
+    （u_z76gngdm5wzt4xvj，未激活无绑定）。
+  - **用户测试清单**（详见 docs/GUIDE.md「0. 当前生产状态」）：
+    ① 手机开 https://newapi.email/（或邮件 em_13bfd57b1ff2 里的新链接）→ 门户页应正常加载
+    ② magic link 登录（xunricky@gmail.com）→ /me 页
+    ③ （新机器装客户端）`curl -fsSL https://newapi.email/i.sh | bash` → 本地控制台
+    （静态分发已修复，此前该命令公网 404）④ DSH GUI https://dsh.newapi.email/
+    （CF Access 邮箱验证，行为不变）

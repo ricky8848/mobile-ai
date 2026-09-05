@@ -3,7 +3,7 @@
 //
 // 与 CF Workers（src/index.js）跑**同一份 Worker 代码**：Node 24 + 内置 SQLite
 // （node:sqlite，D1 兼容垫片），零路由重复。数据持久化到 SQLite（schema.sql）。
-// cloudflared 命名隧道把 mai.newapi.email → http://127.0.0.1:6420 暴露到公网。
+// cloudflared 隧道把 newapi.email（apex，Zero Trust 公共主机名）→ http://127.0.0.1:6420 暴露到公网。
 //
 //   node server.mjs        # http://127.0.0.1:6420
 //   MAI_DB=/path/db PORT=xxxx node server.mjs
@@ -13,7 +13,7 @@
 //   MAI_HOME        数据目录（env 文件位置；缺省 ~/.mobileai）
 //   MAI_DB          SQLite 文件路径（缺省 ~/.mobileai/control.db）
 //   DOMAIN          newapi.email（用户隧道子域根；勿改，除非换域名）
-//   PORTAL_BASE     门户公网地址（缺省 https://mai.newapi.email；magic link / Stripe 回跳用）
+//   PORTAL_BASE     门户公网地址（缺省 https://newapi.email；magic link / Stripe 回跳用）
 //   ADMIN_TOKEN     管理端令牌（缺省 dev-admin-token → 启动时告警，生产必须替换）
 //   CF_API_TOKEN / CF_ACCOUNT_ID   用户隧道创建用（cf.js；未配时 activate 会报错）
 //   PAYMENT_* / STRIPE_*           见 wrangler.jsonc vars/secrets 注释
@@ -23,6 +23,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 /* ---------------- env file（~/.mobileai/control.env）---------------- */
@@ -51,7 +52,7 @@ const fileEnv = parseEnvFile(ENV_FILE);
 const env = { ...fileEnv, ...process.env };
 env.DB_PATH = process.env.MAI_DB || fileEnv.MAI_DB || path.join(HOME_DIR, 'control.db');
 env.DOMAIN = process.env.DOMAIN || fileEnv.DOMAIN || 'newapi.email';
-env.PORTAL_BASE = process.env.PORTAL_BASE || fileEnv.PORTAL_BASE || 'https://mai.newapi.email';
+env.PORTAL_BASE = process.env.PORTAL_BASE || fileEnv.PORTAL_BASE || 'https://newapi.email';
 const PORT = Number(process.env.PORT || fileEnv.PORT) || 6420;
 
 /* ---------------- SQLite（D1 兼容垫片：prepare().bind() → first/all/run）---------------- */
@@ -80,6 +81,19 @@ function d1Shim() {
 /* ---------------- Worker 桥接：HTTP ↔ Request/Response（Node ≥18 Web API）---------------- */
 const worker = (await import('./src/index.js')).default;
 
+/* 静态分发：安装脚本 + 客户端源码（与 mock-server.mjs / wrangler assets static/ 同集合）。
+   CF Workers 部署走 wrangler assets（control/static/ 同步副本）；本 Node 服务直接从
+   ../client/ 取文件（单一事实源，免双份同步）。2026-09-05 补：此前公网 /i.sh 等 404。 */
+// 注意：必须 fileURLToPath —— URL.pathname 会把路径里的空格编码成 %20（本仓库目录名含空格）
+const STATIC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'client');
+const STATIC_FILES = {
+  '/i.sh':         ['i.sh',             'text/x-shellscript; charset=utf-8'],
+  '/i.ps1':        ['i.ps1',            'text/plain; charset=utf-8'],
+  '/mobileai.mjs': ['src/mobileai.mjs', 'text/javascript; charset=utf-8'],
+  '/app.js':       ['src/app.js',       'application/javascript; charset=utf-8'],
+  '/guide.md':     ['src/guide.md',     'text/markdown; charset=utf-8'],
+};
+
 function envForWorker() {
   return { ...env, DB: d1Shim() }; // env.DB 每次请求新建垫片（prepare 无状态，可复用）
 }
@@ -90,6 +104,14 @@ const server = http.createServer(async (req, res) => {
     for await (const c of req) chunks.push(c);
     const raw = Buffer.concat(chunks); // Stripe webhook 需原始 body（验签）
     const url = new URL(req.url, 'http://127.0.0.1');
+    if ((req.method === 'GET' || req.method === 'HEAD') && STATIC_FILES[url.pathname]) {
+      const [rel, ctype] = STATIC_FILES[url.pathname];
+      try {
+        const buf = fs.readFileSync(path.join(STATIC_ROOT, rel));
+        res.writeHead(200, { 'content-type': ctype });
+        return req.method === 'HEAD' ? res.end() : res.end(buf);
+      } catch (e) { console.warn(`[static] ${url.pathname} 读取失败：${e.message}`); /* → 落回 Worker（404） */ }
+    }
     const init = { method: req.method, headers: req.headers };
     if (req.method !== 'GET' && req.method !== 'HEAD') init.body = raw;
     const resp = await worker.fetch(new Request(url.toString(), init), envForWorker());

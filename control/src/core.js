@@ -56,7 +56,7 @@ export async function activate(db, cf, { code, machineCode, serviceAddr }, domai
   let tunnelId, token;
   try {
     const t = await cf.createTunnel({ name: 'mai-' + user.id.slice(0, 8), hostname, service: 'http://' + serviceAddr });
-    tunnelId = t.tunnelId; token = await cf.issueToken(tunnelId);
+    tunnelId = t.tunnelId; token = t.token || (await cf.issueToken(tunnelId)); // 新版 API：创建即带 token
     await cf.createCname({ sub, tunnelId });
   } catch (e) { return err('隧道创建失败：' + String(e.message || e)); }
 
@@ -161,9 +161,27 @@ export async function enqueueEmail(db, { to_email, subject, body_text }, ts) {
   return id;
 }
 
-export async function markEmail(db, id, { ok, error }, ts) {
-  await db.updateEmail(id, { status: ok ? 'sent' : 'failed', error: error || null }, ts);
+export const EMAIL_STALE_MS = 10 * 60e3; // sending 僵死阈值（env EMAIL_STALE_MS 可覆盖）
+
+// 领取（原子）：queued/failed/stale-sending → sending。重复轮询、多 mailer 实例
+// 并发时只有一个能领到；未领到的直接跳过 → 杜绝同一封邮件被并发发送。
+// sending 超过 staleMs（默认 EMAIL_STALE_MS）视为僵死（mailer 崩溃/回报丢失），允许重新领取。
+export async function claimEmail(db, id, ts, staleMs = EMAIL_STALE_MS) {
+  return !!(await db.claimEmail(id, ts - staleMs));
 }
+
+// 结果回报（带状态守卫）：sent 是终态——迟到的 ok:false（并发旧尝试超时）
+// 不得把已 sent 的邮件打回 failed，否则 RETRY_MS 重试会无限重发同一封。
+export async function markEmail(db, id, { ok, error }, ts) {
+  await db.markEmail(id, !!ok && !error, error || null, ts);
+}
+
+// 队列视图：queued + 僵死 sending（可被重新领取）；普通 sending 不返回。
+export async function claimableEmails(db, ts, limit, staleMs = EMAIL_STALE_MS) {
+  return await db.claimableEmails(ts - staleMs, limit);
+}
+
+export const emailStaleMs = (env) => Number(env && env.EMAIL_STALE_MS) > 0 ? Number(env.EMAIL_STALE_MS) : EMAIL_STALE_MS;
 
 // v0.3 纯文本邮件模板（黑白、无 HTML）
 export function magicLinkEmail(email, link) {
@@ -175,6 +193,14 @@ export function magicLinkEmail(email, link) {
 export function codeEmail(email, code) {
   return ['移动AI（mobile ai）— 你的认证码', '', `你好，${email}：`,
     '付款已确认。你的专属认证码（一次性）：', '', `      ${code}`, '',
+    '在本地控制台页面填入「本机地址 + 认证码」即可上线隧道。',
+    '完整指引见控制台内「使用指引」。', ''].join('\n');
+}
+
+// 试用码（测试阶段免费签发）：文案不含「付款已确认」
+export function trialCodeEmail(email, code) {
+  return ['移动AI（mobile ai）— 你的试用码', '', `你好，${email}：`,
+    '已为你签发试用认证码（一次性）：', '', `      ${code}`, '',
     '在本地控制台页面填入「本机地址 + 认证码」即可上线隧道。',
     '完整指引见控制台内「使用指引」。', ''].join('\n');
 }

@@ -26,14 +26,15 @@ export function makeCf(env) {
   const ingress = (hostname, service) => [{ hostname, service }, { service: 'http_status:404' }];
 
   return {
-    // 建命名隧道并写入首条 ingress（hostname → http://serviceAddr）
+    // 建命名隧道并写入首条 ingress（hostname → http://serviceAddr）。
+    // 新版 CF API：创建响应自带运行 token（独立 POST .../tokens 端点已移除 → 404）。
     async createTunnel({ name, hostname, service }) {
       const j = await api('POST', `/accounts/${env.CF_ACCOUNT_ID}/cfd_tunnel`,
         { name, config: { ingress: ingress(hostname, service) } });
-      return { tunnelId: j.result.id };
+      return { tunnelId: j.result.id, token: j.result.token || null };
     },
 
-    // 为该隧道签发 cloudflared token（客户端 `tunnel --token <t> run`）
+    // 为该隧道签发 cloudflared token（旧版 API 回退；新版用 createTunnel 返回的 token）
     async issueToken(tunnelId) {
       const j = await api('POST', `/accounts/${env.CF_ACCOUNT_ID}/cfd_tunnel/${tunnelId}/tokens`);
       return j.result.token;

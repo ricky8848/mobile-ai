@@ -4,7 +4,7 @@
 //   MOCK_PORT=xxxx node mock-server.mjs
 import http from 'node:http';
 import fs from 'node:fs';
-import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
+import { activate, heartbeat, rotate, issueCode, markOrderPaid, ensureUser, enqueueEmail, trialCodeEmail, claimEmail, claimableEmails, emailStaleMs, markEmail, apply, consumeMagicLink, createSession, sessionUser, mePayload,
   paymentInfoFromEnv, createAdminSession, adminSessionOk, deleteAdminSession, revokeBinding, adminBindings,
   adminStats, ONLINE_WINDOW_MS } from './src/core.js';
 import { createStripeCheckout, handleStripeWebhook, signStripePayload, MOCK_WEBHOOK_SECRET } from './src/stripe.js';
@@ -42,6 +42,15 @@ export const db = {
   createEmail: async (r) => { emailsArr.push({ ...r }); },
   updateEmail: async (id, fields, ts) => { const e = emailsArr.find((x) => x.id === id); if (e) Object.assign(e, fields, { updated_at: ts }); },
   listEmails: async (status, limit) => emailsArr.filter((e) => !status || e.status === status).sort((a, b) => (status ? a.created_at - b.created_at : b.created_at - a.created_at)).slice(0, limit),
+  // P3b：claim 机制（与 D1 适配器同语义；单进程内存态，读-改-写在事件循环内原子）
+  claimEmail: async (id, staleBeforeTs) => { const e = emailsArr.find((x) => x.id === String(id)); if (!e) return false;
+    const win = e.status === 'queued' || e.status === 'failed' || (e.status === 'sending' && Number(e.updated_at) < staleBeforeTs);
+    if (win) { e.status = 'sending'; e.error = null; e.updated_at = Date.now(); return true; }
+    return false; },
+  markEmail: async (id, ok, error, ts) => { const e = emailsArr.find((x) => x.id === String(id)); if (!e || e.status === 'sent') return;
+    Object.assign(e, { status: ok ? 'sent' : 'failed', error: ok ? null : (error || null), updated_at: ts }); },
+  claimableEmails: async (staleBeforeTs, limit) => emailsArr.filter((e) => e.status === 'queued' || (e.status === 'sending' && Number(e.updated_at) < staleBeforeTs))
+    .sort((a, b) => a.created_at - b.created_at).slice(0, limit),
   session: (t) => sessionsMap.get(t),
   createSession: async (r) => { sessionsMap.set(r.token, { ...r }); },
   listBindings: async (status) => [...bindings.values()].filter((b) => !status || b.status === status),
@@ -183,10 +192,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/admin/')) {
+      console.log('[dbg] ' + req.method + ' ' + url.pathname); // 全请求留痕（含 401，便于定位 mark/claim 去向）
       if (!adminOk) return json(res, { error: 'unauthorized' }, 401);
       if (req.method === 'POST' && url.pathname === '/admin/user') { const u = await ensureUser(db, body.email, ts); return json(res, { ok: true, email: u.email, status: u.status }); }
       if (req.method === 'POST' && url.pathname === '/admin/order-paid') return out(res, await markOrderPaid(db, { ...body, amountCents: Number(process.env.PAYMENT_AMOUNT_CENTS) || 3900 }, ts));
-      if (req.method === 'POST' && url.pathname === '/admin/issue-code') return out(res, await issueCode(db, { email: body.email }, ts));
+      if (req.method === 'POST' && url.pathname === '/admin/issue-code') { // 试用码：签发 + 发邮件（与 Worker 同语义）
+        const r = await issueCode(db, { email: body.email }, ts);
+        if (!r.error) await enqueueEmail(db, { to_email: String(body.email), subject: '移动AI — 你的试用码', body_text: trialCodeEmail(String(body.email), r.code) }, ts);
+        return out(res, r); }
       if (req.method === 'GET' && url.pathname === '/admin/users') return json(res, await db.listUsers());
       if (req.method === 'GET' && url.pathname === '/admin/bindings') return json(res, await adminBindings(db, { status: url.searchParams.get('status') }));
       if (req.method === 'GET' && url.pathname === '/admin/emails') return json(res, { queued: await db.listEmails('queued', 10),
@@ -198,8 +211,10 @@ const server = http.createServer(async (req, res) => {
           stripe_events_recent: await db.recentStripeEvents(5) });
       }
       if (req.method === 'POST' && url.pathname === '/admin/revoke') return out(res, await revokeBinding(db, body.id, ts));
-      if (req.method === 'GET' && url.pathname === '/admin/email-queue') return json(res, { emails: await db.listEmails('queued', 10) });
-      if (req.method === 'POST' && url.pathname === '/admin/email-result') { await markEmail(db, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json(res, { ok: true }); }
+      const _staleMs = emailStaleMs(process.env); // P3b：claim 机制（防重复发送）
+      if (req.method === 'POST' && url.pathname === '/admin/email-claim') { const _c = await claimEmail(db, body.id, ts, _staleMs); console.log('[dbg] email-claim id=' + body.id + ' claimed=' + _c); return json(res, { ok: true, claimed: _c }); }
+      if (req.method === 'GET' && url.pathname === '/admin/email-queue') { const _l = await claimableEmails(db, ts, 10, _staleMs); console.log('[dbg] email-queue → ' + (_l.map((e) => e.id).join(',') || '(empty)')); return json(res, { emails: _l }); }
+      if (req.method === 'POST' && url.pathname === '/admin/email-result') { const _f = emailsArr.find((x) => x.id === body.id); console.log('[dbg] email-result id=' + body.id + ' found=' + !!_f + ' before=' + (_f ? _f.status : '?') + ' ok=' + (!!body.ok && !body.error)); await markEmail(db, body.id, { ok: !!body.ok && !body.error, error: body.error || null }, ts); return json(res, { ok: true }); }
       return json(res, { error: 'not found' }, 404);
     }
     // ---- 门户（P4，与 Worker 一致）----
