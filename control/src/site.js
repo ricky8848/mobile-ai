@@ -123,19 +123,25 @@ export function loginErrorPage(msg, portalBase = '') {
 }
 
 /* ---------------- 我的页面：认证码 + 绑定状态 ---------------- */
-export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}, dshGuiUrl = '') {
+export function mePage(p, portalBase, domain = 'newapi.email', pay, flags = {}) {
   const b = p.binding;
   const bp = basePathOf(portalBase); // 子路径挂载（/mai）时内部跳转带前缀
-  const bindCard = b ? `
+  const tools = p.tools || (b ? [b] : []); // 「我的工具」：账号的全部绑定服务（每项 = 一个专属 URL 入口）
+  const toolsCard = tools.length ? `
 <div class="card">
-<label>当前绑定</label>
-<div class="kv"><span>专属 URL</span><span class="mono">${esc(b.subdomain)}.${esc(domain)}</span></div>
-<div class="kv"><span>机器码</span><span class="mono">${esc(String(b.machine_code).slice(0, 12))}…</span></div>
-<div class="kv"><span>状态</span><span>${b.status === 'active' ? '<span class="badge ok">在线</span>' : b.status === 'grace' ? '<span class="badge warn">宽限（心跳超时）</span>' : '<span class="badge err">' + esc(b.status) + '</span>'}</span></div>
-<div class="kv"><span>最后心跳</span><span>${b.last_heartbeat ? new Date(b.last_heartbeat).toLocaleString('zh-CN') : '尚未上报'}</span></div>
+<label>我的工具</label>
+${tools.map((t) => `
+<div style="padding:12px 0;border-top:1px solid rgba(0,0,0,.08)">
+<div class="kv"><span>专属 URL</span><a class="mono" href="${esc('https://' + t.subdomain + '.' + domain)}" target="_blank" rel="noopener">${esc(t.subdomain)}.${esc(domain)}</a></div>
+<div class="kv"><span>服务地址</span><span class="mono">${esc(t.service_addr || '—')}</span></div>
+<div class="kv"><span>状态</span><span>${t.status === 'active' ? '<span class="badge ok">在线</span>' : t.status === 'grace' ? '<span class="badge warn">宽限（心跳超时）</span>' : '<span class="badge err">' + esc(t.status) + '</span>'}</span></div>
+<div class="kv"><span>最后心跳</span><span>${t.last_heartbeat ? new Date(t.last_heartbeat).toLocaleString('zh-CN') : '尚未上报'}</span></div>
+<button class="mini ghost" data-act="rotatetool" data-id="${esc(t.id)}">URL 轮换</button>
+</div>`).join('')}
+<p style="font-size:12px;color:var(--muted);margin-top:8px">专属 URL = 家中电脑全部工具的入口（DeepSeek Harness / Codex / OpenClaw 等，手机浏览器直接操作）。URL 轮换用于安全：执行后旧链接立即失效、新链接数秒内生效（机器码不变，客户端无需重跑）。</p>
 </div>` : `
 <div class="card">
-<label>尚未绑定终端</label>
+<label>尚未绑定工具</label>
 <p style="font-size:14px;color:var(--muted);margin:8px 0">在家中电脑上运行一条命令（自动下载 cloudflared + 打开本地控制台），然后填入下方认证码：</p>
 <pre class="cmd">curl -fsSL ${esc(portalBase)}/i.sh | bash</pre>
 <pre class="cmd" style="margin-top:8px"># Windows PowerShell：irm ${esc(portalBase)}/i.ps1 | iex</pre>
@@ -150,20 +156,19 @@ ${flags.justPaid ? '<div class="card" style="border-color:rgba(52,199,89,.45)"><
 <div class="kv"><span>状态</span><span>${p.status === 'active' ? '<span class="badge ok">已激活</span>' : p.status === 'suspended' ? '<span class="badge err">已停用</span>' : '<span class="badge warn">待付款确认</span>'}</span></div>
 ${p.status === 'pending' ? paymentCard(pay, bp) : ''}
 </div>
-${dshGuiUrl ? `<div class="card">
-<label>手机使用全部工具</label>
-<p style="font-size:14px;color:var(--muted);margin:8px 0">DSH Web GUI = 家中电脑的全部工具（DeepSeek Harness / Codex / OpenClaw 等），手机浏览器直接操作：</p>
-<div class="row"><a href="${esc(dshGuiUrl)}" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:9px 0;border-radius:10px;background:#1d1d1f;color:#fff;text-decoration:none;font-size:14px">打开 DSH 控制台 →</a></div>
-</div>` : ''}
 ${p.code ? `<div class="card">
 <label>认证码（一次性，填入本地控制台）</label>
 <div class="big-code mono">${esc(p.code.code)}</div>
 <div class="row"><button onclick="copyCode(this)" style="font-size:13px;padding:8px 14px">复制</button>
 <span class="badge ${p.code.status === 'redeemed' ? '' : 'ok'}">${p.code.status === 'redeemed' ? '已使用' : '未使用'}</span></div>
 </div>` : '<p style="font-size:13px;color:var(--muted)">暂无认证码 — 付款确认后自动发放。</p>'}
-${bindCard}
+${toolsCard}
 <footer>移动AI · newapi.email</footer>` + `
-<script>function copyCode(el){navigator.clipboard.writeText('${p.code ? esc(p.code.code) : ''}').then(()=>{el.textContent='已复制 ✓';setTimeout(()=>el.textContent='复制',1500)})}</script>`);
+<script>function copyCode(el){navigator.clipboard.writeText('${p.code ? esc(p.code.code) : ''}').then(()=>{el.textContent='已复制 ✓';setTimeout(()=>el.textContent='复制',1500)})}
+document.body.addEventListener('click',async ev=>{const btn=ev.target.closest('button[data-act="rotatetool"]');if(!btn)return;
+ btn.disabled=true;const r=await fetch('${bp}/site/tools/rotate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:btn.dataset.id})});
+ const d=await r.json().catch(()=>({}));if(!r.ok||!d.url){alert('轮换失败：'+(d.error||('#'+r.status)));btn.disabled=false;return}
+ alert('轮换成功 ✓\n新 URL：'+d.url);location.reload()});</script>`);
 }
 
 /* ---------------- P6/P7：付款卡片（/me 待付款状态） ---------------- */

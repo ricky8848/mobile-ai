@@ -234,7 +234,8 @@ export async function sessionUser(db, token) {
 export async function mePayload(db, user) {
   const codes = await db.latestCodes(user.id);
   const bindings = await db.bindingsForUser(user.id, ['active', 'grace']);
-  return { email: user.email, status: user.status, code: codes[0] || null, binding: bindings[0] || null };
+  // binding = 首个（兼容旧前端）；tools = 全部绑定（/me「我的工具」管理列表，每项 = 一个服务入口）
+  return { email: user.email, status: user.status, code: codes[0] || null, binding: bindings[0] || null, tools: bindings };
 }
 
 /* ---------------- P6：收费信息（v0.3 半自动：二维码 + 确认后自动发码） ---------------- */

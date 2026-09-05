@@ -26,6 +26,7 @@ export const db = {
   userByEmail: async (e) => { for (const u of users.values()) if (u.email === e) return u; return null; },
   bindingByMachine: async (mc) => { let r = null; for (const b of bindings.values()) if (b.machine_code === mc && (!r || b.created_at > r.created_at)) r = b; return r; },
   bindingBySubdomain: async (sub) => { for (const b of bindings.values()) if (b.subdomain === sub) return b; return null; },
+  binding: async (id) => bindings.get(id) || null,
   async bindingsForUser(uid, statuses) { const r = []; for (const b of bindings.values()) if (b.user_id === uid && statuses.includes(b.status)) r.push(b); return r.sort((a, b) => b.created_at - a.created_at); },
   redeemCode: async (c, ts) => { const k = codes.get(c); if (k && k.status === 'issued') { k.status = 'redeemed'; k.updated_at = ts; } },
   createBinding: async (r) => { bindings.set(r.id, { created_at: r.created_at || Date.now(), updated_at: r.updated_at || Date.now(), ...r }); },
@@ -231,6 +232,14 @@ const server = http.createServer(async (req, res) => {
       if (!u) { res.writeHead(302, { location: '/' }); return res.end(); }
       return html(res, mePage(await mePayload(db, u), portalBase, DOMAIN, paymentInfoFromEnv(process.env),
         { justPaid: url.searchParams.get('paid') === '1' })); // P7：Stripe success_url 回跳
+    }
+    if (req.method === 'POST' && url.pathname === '/site/tools/rotate') { // 我的工具：客户侧 URL 轮换（与 src/index.js 同规则）
+      const u = await sessionUser(db, (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
+      if (!u) return json(res, { error: 'unauthorized' }, 401);
+      const b = await db.binding(String(body.id || ''));
+      if (!b || b.user_id !== u.id) return json(res, { error: '绑定不存在' }, 404);
+      if (!['active', 'grace'].includes(b.status)) return json(res, { error: '绑定不可用（已吊销/停用）' }, 409);
+      return out(res, await rotate(db, cf, { machineCode: b.machine_code, url: 'https://' + b.subdomain + '.' + DOMAIN }, DOMAIN, ts));
     }
     if (req.method === 'POST' && url.pathname === '/site/pay/checkout') { // P7：Stripe Checkout（mock 或真实）
       const u = await sessionUser(db, (req.headers['cookie'] || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));

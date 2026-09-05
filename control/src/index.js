@@ -21,6 +21,7 @@ function dbAdapter(db) {
     userByEmail: (e) => db.prepare('SELECT * FROM users WHERE email=?').bind(e).first(),
     bindingByMachine: (mc) => db.prepare('SELECT * FROM bindings WHERE machine_code=? ORDER BY created_at DESC').bind(mc).first(),
     bindingBySubdomain: (sub) => db.prepare('SELECT * FROM bindings WHERE subdomain=?').bind(sub).first(),
+    binding: (id) => db.prepare('SELECT * FROM bindings WHERE id=?').bind(id).first(),
     async bindingsForUser(uid, statuses) {
       const ph = statuses.map(() => '?').join(',');
       return (await db.prepare(`SELECT * FROM bindings WHERE user_id=? AND status IN (${ph}) ORDER BY created_at DESC`)
@@ -160,11 +161,18 @@ export default {
     if (req.method === 'GET' && url.pathname === '/me') {
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
       if (!u) return new Response(null, { status: 302, headers: { location: bp + '/' } });
-      // DSH GUI（全部工具入口）：env.DSH_GUI_URL 优先；子路径挂载时缺省 = 同域根（dsh.newapi.email/）
-      let dshGuiUrl = env.DSH_GUI_URL || '';
-      if (!dshGuiUrl && bp) { try { dshGuiUrl = new URL(portalBase).origin + '/'; } catch {} }
       return html(mePage(await mePayload(db, u), portalBase, env.DOMAIN, paymentInfoFromEnv(env),
-        { justPaid: url.searchParams.get('paid') === '1' }, dshGuiUrl)); // P7：Stripe success_url 回跳
+        { justPaid: url.searchParams.get('paid') === '1' })); // P7：Stripe success_url 回跳
+    }
+    // ---- 我的工具（客户侧管理）：绑定服务一键 URL 轮换 —— 与客户端 /api/rotate 同规则（core.rotate），
+    //      区别仅在鉴权：门户会话 + 绑定归属校验（客户只能轮换自己的工具）----
+    if (req.method === 'POST' && url.pathname === '/site/tools/rotate') {
+      const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));
+      if (!u) return json({ error: 'unauthorized' }, 401);
+      const b = await db.binding(String(body.id || ''));
+      if (!b || b.user_id !== u.id) return json({ error: '绑定不存在' }, 404);
+      if (!['active', 'grace'].includes(b.status)) return json({ error: '绑定不可用（已吊销/停用）' }, 409);
+      return out(await rotate(db, cf, { machineCode: b.machine_code, url: 'https://' + b.subdomain + '.' + env.DOMAIN }, env.DOMAIN, ts));
     }
     if (req.method === 'POST' && url.pathname === '/site/pay/checkout') { // P7：创建 Stripe Checkout（需门户会话）
       const u = await sessionUser(db, (req.headers.get('cookie') || '').split('; ').find((c) => c.startsWith('mai_session='))?.slice(12));

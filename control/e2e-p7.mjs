@@ -142,6 +142,33 @@ async function main() {
   r = await post('/api/activate', { code: 'MAI-XXXXXX', machineCode: MC, serviceAddr: '127.0.0.1:3080' });
   ok('activate 坏码 → 4xx', r.status >= 400 && r.status < 500);
 
+  // 10b) 我的工具（客户侧管理）：重新登录 A → /me 显示工具列表 + 门户 URL 轮换
+  r = await post('/site/apply', { email: emailA }); // 重新申请（旧 magic link 已消费）→ 新确认邮件
+  let tokA2 = null;
+  for (let i = 0; i < 25 && !tokA2; i++) {
+    const q = await fetch(BASE + '/admin/emails?limit=50', { headers: ADMIN });
+    const list = (await q.json().catch(() => ({ recent: [] }))).recent || [];
+    for (const e of list) if ((e.to_email || '') === emailA && /token=/.test(e.body_text || '')) {
+      const m = (e.body_text).match(/token=([a-f0-9]{32})/);
+      if (m && m[1] !== tokA) { tokA2 = m[1]; break; }
+    }
+    if (!tokA2) await new Promise((r2) => setTimeout(r2, 200));
+  }
+  ok('重新申请 A → 新 magic link', !!tokA2);
+  r = await get('/login?token=' + tokA2); setJar(r); // jar → A
+  ok('重新登录 A', r.status === 302 && (r.headers.get('location') || '') === '/me');
+  r = await get('/me', { headers: { cookie: jarOf('mai_session') } });
+  const meHtml = await r.text();
+  ok('/me → 我的工具 + 专属 URL', r.status === 200 && meHtml.includes('我的工具') && (meHtml.match(act.url) || []).length >= 1, 'tools card missing');
+  const bId = bs0.id; // A 的绑定（当前唯一）
+  r = await post('/site/tools/rotate', { id: bId }, { cookie: jarOf('mai_session') });
+  const rot = await r.json().catch(() => ({}));
+  ok('门户轮换 → 新 URL', r.status === 200 && rot.url && rot.url !== act.url, JSON.stringify(rot));
+  r = await post('/api/heartbeat', { machineCode: MC, url: rot.url });
+  ok('新 URL heartbeat → ok', (await r.json().catch(() => ({ ok: false }))).ok === true);
+  r = await post('/site/tools/rotate', { id: bId }); // 无会话
+  ok('轮换未登录 → 401', r.status === 401);
+
   // 11) admin dashboard HTML（cookie 登录）含实时总览
   r = await post('/admin/login', { token: 'dev-admin-token' }); setJar(r);
   r = await get('/admin', { headers: { cookie: jarOf('mai_admin') } });

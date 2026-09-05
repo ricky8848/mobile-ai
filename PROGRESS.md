@@ -388,3 +388,26 @@ new dsh/
     https://dsh.newapi.email/，与门户同一 CF Access 会话；env.DSH_GUI_URL 可覆盖，
     子路径挂载缺省 = 同域根）。线上验证 ✓（卡片 + href 渲染正确）。
   - **回归**：改动后复跑 smoke **16/16 PASS** + e2e-p7 **31 PASS / 0 FAIL**。
+- **2026-09-05（续5 · DSH-MobileAI 公开发布 + 客户侧「我的工具」管理）**：
+  - **GitHub 改名**：ricky8848/mobile-ai → **ricky8848/DSH-MobileAI**（旧 URL 301 自动跳转；
+    本地 remote 已更新）。**README 全量重写为客户向产品页**：生产地址总表（含 CF Access
+    说明）、客户完整流程四步（申请 → magic link ≤5s → 认证码/付款 → i.sh 一条命令装客户端
+    → 手机开专属 URL）、**「我的工具」管理说明、多工具支持矩阵**（DSH 内全部工具 =
+    一条隧道 ✅ / 同机多独立服务 = 每服务一次激活·各需一个认证码 ✅ / 多台机器每台一条
+    隧道 + 单终端绑定安全模型）、运营/开发节（后台、控制面、回归 16+37）。
+  - **客户页「我的工具」管理面板**（用户要求：客户页面要有能管理的工具选项）：
+    mePayload 增 `tools` = 账号全部绑定（`binding` 保留兼容）；/me「我的工具」卡列出
+    每个绑定服务（专属 URL 可点 / 服务地址 / 状态在线·宽限 / 最后心跳）+ **「URL 轮换」
+    按钮**（新端点 POST /site/tools/rotate：门户会话 + **绑定归属校验**，与客户端
+    core.rotate 同规则——旧链接立即失效、机器码不变、客户端无需重跑）；无绑定 →
+    「尚未绑定工具」引导卡（i.sh 命令）。dbAdapter/mock-server 补 `binding(id)`；
+    index.js + mock-server 双端点同实现。**移除上一轮硬编码 dshGuiUrl「打开 DSH
+    控制台」卡**（指向运营方机器 GUI，多客户场景下架构错误 → 改为客户自己的专属
+    URL 入口）。
+  - **多工具支持确认**（用户提问）：DSH GUI 内的全部工具（Harness/Codex/OpenClaw…）
+    = 一条隧道全包含；独立服务每服务一次激活（一次性认证码，运营后台签发）；
+    单终端绑定 = 「同一服务地址只授权一台机器」（业务规则不变，换机付费重绑）。
+  - **回归**：e2e-p7 扩至 **37 PASS / 0 FAIL**（新增：重新申请→新 magic link、
+    重登 A、/me「我的工具」+专属 URL 渲染、门户轮换→新 URL、新 URL heartbeat ok、
+    未登录轮换 401）+ smoke **16/16 PASS**。线上验证：/me「尚未绑定工具」卡 ✓、
+    rotate 无会话 401 / 越权 id 404 ✓。控制面已重启加载（portal=…/mai）。
